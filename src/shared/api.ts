@@ -1,0 +1,90 @@
+import type {
+  CollectionInfo,
+  CollectionStats,
+  ConnectionConfig,
+  ConnectionInput,
+  ConnectionTestResult,
+  ConnectionUpdatePayload,
+  CountRequest,
+  CountResponse,
+  CreateUserPayload,
+  DatabaseInfo,
+  DatabaseUser,
+  DeleteOneRequest,
+  DeleteOneResponse,
+  DropUserPayload,
+  FindRequest,
+  FindResponse,
+  InsertOneRequest,
+  InsertOneResponse,
+  RenameCollectionPayload,
+  ReplaceOneRequest,
+  ReplaceOneResponse,
+  ServerStats,
+  UpdateUserPayload
+} from './types'
+import type { Result } from './result'
+
+/**
+ * The typed surface exposed from the preload script to the renderer
+ * via `contextBridge.exposeInMainWorld('api', ...)`.
+ *
+ * Renderer-side: `window.api` (see src/renderer/src/global.d.ts).
+ * Preload-side: implemented in src/preload/index.ts.
+ *
+ * Keep this file free of Electron / Node imports so it can be
+ * consumed by both processes.
+ */
+export type Api = {
+  connections: {
+    list: () => Promise<Result<ConnectionConfig[]>>
+    create: (input: ConnectionInput) => Promise<Result<ConnectionConfig>>
+    update: (payload: ConnectionUpdatePayload) => Promise<Result<ConnectionConfig>>
+    delete: (id: string) => Promise<Result<void>>
+    test: (input: ConnectionInput, existingId?: string) => Promise<Result<ConnectionTestResult>>
+    connect: (id: string) => Promise<Result<{ connectionId: string }>>
+    disconnect: (connectionId: string) => Promise<Result<void>>
+    reorder: (ids: string[]) => Promise<Result<void>>
+  }
+
+  databases: {
+    list: (connectionId: string) => Promise<Result<DatabaseInfo[]>>
+    create: (payload: {
+      connectionId: string
+      db: string
+      firstColl: string
+    }) => Promise<Result<void>>
+    drop: (payload: { connectionId: string; db: string }) => Promise<Result<void>>
+  }
+
+  server: {
+    stats: (connectionId: string) => Promise<Result<ServerStats>>
+  }
+
+  collections: {
+    list: (payload: { connectionId: string; db: string }) => Promise<Result<CollectionInfo[]>>
+    stats: (payload: {
+      connectionId: string
+      db: string
+      coll: string
+    }) => Promise<Result<CollectionStats>>
+    create: (payload: { connectionId: string; db: string; name: string }) => Promise<Result<void>>
+    drop: (payload: { connectionId: string; db: string; coll: string }) => Promise<Result<void>>
+    rename: (payload: RenameCollectionPayload) => Promise<Result<void>>
+  }
+
+  query: {
+    find: (request: FindRequest) => Promise<Result<FindResponse>>
+    count: (request: CountRequest) => Promise<Result<CountResponse>>
+    replaceOne: (request: ReplaceOneRequest) => Promise<Result<ReplaceOneResponse>>
+    insertOne: (request: InsertOneRequest) => Promise<Result<InsertOneResponse>>
+    deleteOne: (request: DeleteOneRequest) => Promise<Result<DeleteOneResponse>>
+  }
+
+  users: {
+    list: (payload: { connectionId: string; db: string }) => Promise<Result<DatabaseUser[]>>
+    create: (payload: CreateUserPayload) => Promise<Result<void>>
+    update: (payload: UpdateUserPayload) => Promise<Result<void>>
+    drop: (payload: DropUserPayload) => Promise<Result<void>>
+  }
+}

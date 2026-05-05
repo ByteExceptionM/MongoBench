@@ -1,0 +1,40 @@
+import { QueryClient } from '@tanstack/react-query'
+import { ApiError } from './api'
+
+export const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      retry: (failureCount, error) => {
+        if (error instanceof ApiError) {
+          if (error.code === 'validation_error' || error.code === 'auth_failed') return false
+        }
+        return failureCount < 1
+      },
+      staleTime: 30_000,
+      refetchOnWindowFocus: false
+    },
+    mutations: {
+      retry: false
+    }
+  }
+})
+
+export const queryKeys = {
+  connections: ['connections'] as const,
+  databases: (connectionId: string) => ['databases', connectionId] as const,
+  collections: (connectionId: string, db: string) => ['collections', connectionId, db] as const,
+  collectionStats: (connectionId: string, db: string, coll: string) =>
+    ['collection-stats', connectionId, db, coll] as const,
+  users: (connectionId: string, db: string) => ['users', connectionId, db] as const,
+  serverStats: (connectionId: string) => ['server-stats', connectionId] as const,
+  find: (
+    connectionId: string,
+    db: string,
+    coll: string,
+    filter: string,
+    skip: number,
+    limit: number
+  ) => ['find', connectionId, db, coll, { filter, skip, limit }] as const,
+  count: (connectionId: string, db: string, coll: string, filter: string) =>
+    ['count', connectionId, db, coll, { filter }] as const
+}

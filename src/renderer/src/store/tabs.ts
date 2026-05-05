@@ -1,0 +1,111 @@
+import { create } from 'zustand'
+
+export type CollectionTab = {
+  id: string
+  connectionId: string
+  db: string
+  coll: string
+  filter: string
+  skip: number
+  /** 0 = no limit (return all matching documents). */
+  limit: number
+}
+
+export type QueryPatch = Partial<Pick<CollectionTab, 'filter' | 'skip' | 'limit'>>
+
+const DEFAULT_LIMIT = 100
+
+const tabId = (connectionId: string, db: string, coll: string): string =>
+  `${connectionId}::${db}::${coll}`
+
+type TabsState = {
+  tabs: CollectionTab[]
+  activeTabId: string | null
+  open: (params: { connectionId: string; db: string; coll: string }) => void
+  close: (id: string) => void
+  activate: (id: string) => void
+  setQuery: (id: string, patch: QueryPatch) => void
+  closeForConnection: (connectionId: string) => void
+  closeForCollection: (connectionId: string, db: string, coll: string) => void
+  closeForDatabase: (connectionId: string, db: string) => void
+  renameCollection: (connectionId: string, db: string, oldName: string, newName: string) => void
+}
+
+export const useTabsStore = create<TabsState>((set) => ({
+  tabs: [],
+  activeTabId: null,
+  open: ({ connectionId, db, coll }) =>
+    set((state) => {
+      const id = tabId(connectionId, db, coll)
+      if (state.tabs.some((t) => t.id === id)) {
+        return { activeTabId: id }
+      }
+      const tab: CollectionTab = {
+        id,
+        connectionId,
+        db,
+        coll,
+        filter: '',
+        skip: 0,
+        limit: DEFAULT_LIMIT
+      }
+      return { tabs: [...state.tabs, tab], activeTabId: id }
+    }),
+  close: (id) =>
+    set((state) => {
+      const idx = state.tabs.findIndex((t) => t.id === id)
+      if (idx === -1) return state
+      const remaining = state.tabs.filter((t) => t.id !== id)
+      let nextActive = state.activeTabId
+      if (state.activeTabId === id) {
+        nextActive = remaining[idx]?.id ?? remaining[idx - 1]?.id ?? null
+      }
+      return { tabs: remaining, activeTabId: nextActive }
+    }),
+  activate: (id) => set({ activeTabId: id }),
+  setQuery: (id, patch) =>
+    set((state) => ({
+      tabs: state.tabs.map((t) => (t.id === id ? { ...t, ...patch } : t))
+    })),
+  closeForConnection: (connectionId) =>
+    set((state) => {
+      const remaining = state.tabs.filter((t) => t.connectionId !== connectionId)
+      const stillActive = remaining.some((t) => t.id === state.activeTabId)
+      return {
+        tabs: remaining,
+        activeTabId: stillActive ? state.activeTabId : (remaining[0]?.id ?? null)
+      }
+    }),
+  closeForCollection: (connectionId, db, coll) =>
+    set((state) => {
+      const remaining = state.tabs.filter(
+        (t) => !(t.connectionId === connectionId && t.db === db && t.coll === coll)
+      )
+      const stillActive = remaining.some((t) => t.id === state.activeTabId)
+      return {
+        tabs: remaining,
+        activeTabId: stillActive ? state.activeTabId : (remaining[0]?.id ?? null)
+      }
+    }),
+  closeForDatabase: (connectionId, db) =>
+    set((state) => {
+      const remaining = state.tabs.filter((t) => !(t.connectionId === connectionId && t.db === db))
+      const stillActive = remaining.some((t) => t.id === state.activeTabId)
+      return {
+        tabs: remaining,
+        activeTabId: stillActive ? state.activeTabId : (remaining[0]?.id ?? null)
+      }
+    }),
+  renameCollection: (connectionId, db, oldName, newName) =>
+    set((state) => {
+      const oldId = tabId(connectionId, db, oldName)
+      const newId = tabId(connectionId, db, newName)
+      let activeTabId = state.activeTabId
+      const tabs = state.tabs.map((t) => {
+        if (t.connectionId !== connectionId || t.db !== db || t.coll !== oldName) return t
+        if (state.activeTabId === oldId) activeTabId = newId
+        return { ...t, id: newId, coll: newName }
+      })
+      return { tabs, activeTabId }
+    })
+}))
