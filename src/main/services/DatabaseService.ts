@@ -1,3 +1,4 @@
+import type { MongoClient } from 'mongodb'
 import type { CollectionInfo, CollectionStats, DatabaseInfo, ServerStats } from '@shared/types'
 import type { ConnectionService } from './ConnectionService'
 
@@ -9,20 +10,21 @@ export class DatabaseService {
 
   async listDatabases(connectionId: string): Promise<DatabaseInfo[]> {
     const client = this.connections.getClient(connectionId)
-    const result = (await client
-      .db('admin')
-      .admin()
-      .listDatabases({ authorizedDatabases: true })) as {
-      databases: Array<{ name: string; sizeOnDisk?: number; empty?: boolean }>
-    }
-    return result.databases
+    const [result, allowed] = await Promise.all([
+      client.db('admin').admin().listDatabases({ authorizedDatabases: true }) as Promise<{
+        databases: Array<{ name: string; sizeOnDisk?: number; empty?: boolean }>
+      }>,
+      authorizedDatabases(client)
+    ])
+    if (allowed === 'all') return result.databases
+    return result.databases.filter((d) => allowed.has(d.name))
   }
 
   async listCollections(connectionId: string, db: string): Promise<CollectionInfo[]> {
     const client = this.connections.getClient(connectionId)
     const cursor = client
       .db(db)
-      .listCollections({}, { nameOnly: false, authorizedCollections: true })
+      .listCollections({}, { nameOnly: true, authorizedCollections: true })
     const items = await cursor.toArray()
     return items.map((info) => ({
       name: info.name as string,
@@ -236,6 +238,49 @@ export class DatabaseService {
         databases.reduce((s, d) => s + d.sizeOnDisk, 0)
       )
     }
+  }
+}
+
+/**
+ * Returns the set of database names the authenticated user has any privilege on,
+ * or 'all' when the user holds a cluster-wide / anyResource privilege (or auth
+ * is disabled and no privilege list is reported).
+ *
+ * Why: `listDatabases({ authorizedDatabases: true })` is ignored server-side for
+ * users that hold the `listDatabases` cluster action — they get every DB back.
+ * We post-filter using `connectionStatus` so the UI never lists DBs the user
+ * cannot actually open.
+ */
+async function authorizedDatabases(client: MongoClient): Promise<Set<string> | 'all'> {
+  try {
+    const status = (await client
+      .db('admin')
+      .command({ connectionStatus: 1, showPrivileges: true })) as {
+      authInfo?: {
+        authenticatedUsers?: Array<{ user: string; db: string }>
+        authenticatedUserPrivileges?: Array<{
+          resource?: {
+            db?: string
+            collection?: string
+            cluster?: boolean
+            anyResource?: boolean
+          }
+        }>
+      }
+    }
+    const auth = status.authInfo
+    if (!auth || (auth.authenticatedUsers ?? []).length === 0) return 'all'
+    const privs = auth.authenticatedUserPrivileges ?? []
+    const dbs = new Set<string>()
+    for (const p of privs) {
+      const r = p.resource
+      if (!r) continue
+      if (r.anyResource) return 'all'
+      if (typeof r.db === 'string' && r.db.length > 0) dbs.add(r.db)
+    }
+    return dbs
+  } catch {
+    return 'all'
   }
 }
 
