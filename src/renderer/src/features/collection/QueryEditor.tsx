@@ -158,12 +158,21 @@ export function QueryEditor({
 
 let providerRegistered = false
 
+// Distinct top-level keys from the most recently fetched documents. The
+// completion provider reads this directly so it doesn't have to be
+// re-registered on every fetch — refreshing the cache is enough.
+let documentFieldNames: string[] = []
+
+export function setDocumentFieldNames(names: Iterable<string>): void {
+  documentFieldNames = Array.from(new Set(names)).sort((a, b) => a.localeCompare(b))
+}
+
 function ensureProviderRegistered(): void {
   if (providerRegistered) return
   providerRegistered = true
 
   monaco.languages.registerCompletionItemProvider('mongo-shell', {
-    triggerCharacters: ['$', '"', 'I', 'O', 'N', 'U', 'D', 'B', 'T', 'M'],
+    triggerCharacters: ['$', '"', 'I', 'O', 'N', 'U', 'D', 'B', 'T', 'M', '{', ',', ' '],
     provideCompletionItems(model, position) {
       const lineUpToCursor = model.getValueInRange({
         startLineNumber: position.lineNumber,
@@ -172,39 +181,84 @@ function ensureProviderRegistered(): void {
         endColumn: position.column
       })
 
-      // Two trigger contexts:
+      // Three trigger contexts:
       //  - `$foo` (optionally with leading `"`) → MongoDB query operator
       //  - bare identifier prefix → mongo shell helper (ObjectId, ISODate, …)
+      //  - after `{` or `,` (object key position) → cached document field names
       const opMatch = /"?\$[A-Za-z]*$/.exec(lineUpToCursor)
       const helperMatch = /(?:^|[\s:,[(])([A-Za-z][A-Za-z0-9]*)$/.exec(lineUpToCursor)
       const helperPrefix = helperMatch ? helperMatch[1]! : null
+      const keyMatch = /(?:^|[{,])\s*("?)([A-Za-z_$][\w.]*)?$/.exec(lineUpToCursor)
 
-      const startCol = opMatch
-        ? position.column - opMatch[0].length
-        : helperPrefix
-          ? position.column - helperPrefix.length
-          : position.column
-      const range = new monaco.Range(
-        position.lineNumber,
-        startCol,
-        position.lineNumber,
-        position.column
-      )
+      if (opMatch) {
+        const range = new monaco.Range(
+          position.lineNumber,
+          position.column - opMatch[0].length,
+          position.lineNumber,
+          position.column
+        )
+        const suggestions = buildMongoCompletions().map(
+          (c): monaco.languages.CompletionItem => ({
+            label: c.label,
+            kind: c.kind ?? monaco.languages.CompletionItemKind.Keyword,
+            insertText: c.insertText,
+            insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+            documentation: { value: c.doc },
+            detail: c.detail,
+            range,
+            sortText: c.sortText ?? c.label
+          })
+        )
+        return { suggestions }
+      }
 
-      // Computed per-call so date snippets default to "now" instead of a
-      // stale 2024 placeholder.
-      const candidates = opMatch ? buildMongoCompletions() : helperPrefix ? buildShellHelpers() : []
+      const suggestions: monaco.languages.CompletionItem[] = []
 
-      const suggestions: monaco.languages.CompletionItem[] = candidates.map((c) => ({
-        label: c.label,
-        kind: c.kind ?? monaco.languages.CompletionItemKind.Keyword,
-        insertText: c.insertText,
-        insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
-        documentation: { value: c.doc },
-        detail: c.detail,
-        range,
-        sortText: c.sortText ?? c.label
-      }))
+      if (keyMatch && documentFieldNames.length > 0) {
+        const hasQuote = keyMatch[1] === '"'
+        const partial = keyMatch[2] ?? ''
+        const startCol = position.column - partial.length - (hasQuote ? 1 : 0)
+        const range = new monaco.Range(
+          position.lineNumber,
+          startCol,
+          position.lineNumber,
+          position.column
+        )
+        for (const name of documentFieldNames) {
+          suggestions.push({
+            label: name,
+            kind: monaco.languages.CompletionItemKind.Field,
+            insertText: `"${name}"`,
+            filterText: name,
+            detail: 'Document field',
+            range,
+            // Prefix '0' so field names sort above operators / helpers when
+            // both contexts overlap (e.g. user typed a bare letter).
+            sortText: `0_${name}`
+          })
+        }
+      }
+
+      if (helperPrefix) {
+        const range = new monaco.Range(
+          position.lineNumber,
+          position.column - helperPrefix.length,
+          position.lineNumber,
+          position.column
+        )
+        for (const c of buildShellHelpers()) {
+          suggestions.push({
+            label: c.label,
+            kind: c.kind ?? monaco.languages.CompletionItemKind.Keyword,
+            insertText: c.insertText,
+            insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+            documentation: { value: c.doc },
+            detail: c.detail,
+            range,
+            sortText: c.sortText ?? c.label
+          })
+        }
+      }
 
       return { suggestions }
     }

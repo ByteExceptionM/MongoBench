@@ -1,5 +1,5 @@
 import { type FormEvent, useEffect, useMemo, useState } from 'react'
-import { ArrowDownUp, Eye, Loader2, Play, Plus, Wand2, X, XCircle } from 'lucide-react'
+import { ArrowDownUp, Eye, Loader2, Play, Wand2, XCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Tooltip } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
@@ -7,7 +7,10 @@ import { parseMongoQuery } from '@/lib/mongoQueryLang'
 import type { CollectionTab, QueryPatch } from '@/store/tabs'
 import type { DocumentEnvelope, UuidEncoding } from '@shared/types'
 import { ExportButton } from './ExportButton'
-import { QueryEditor } from './QueryEditor'
+import { QueryEditor, setDocumentFieldNames } from './QueryEditor'
+
+const EMPTY_OBJECT = '{}'
+const orDefault = (s: string): string => (s.trim().length === 0 ? EMPTY_OBJECT : s)
 
 export function QueryToolbar({
   tab,
@@ -30,24 +33,27 @@ export function QueryToolbar({
   compiledProjection: string | null
   compiledSort: string | null
 }) {
-  const [filter, setFilter] = useState(tab.filter)
-  const [projection, setProjection] = useState(tab.projection)
-  const [sort, setSort] = useState(tab.sort)
+  const [filter, setFilter] = useState(() => orDefault(tab.filter))
+  const [projection, setProjection] = useState(() => orDefault(tab.projection))
+  const [sort, setSort] = useState(() => orDefault(tab.sort))
   const [limit, setLimit] = useState(tab.limit > 0 ? String(tab.limit) : '')
 
-  // Force-expand state for empty Sort / Projection so the editor stays
-  // visible after the user opens it but before they type anything.
-  const [sortOpen, setSortOpen] = useState(false)
-  const [projectionOpen, setProjectionOpen] = useState(false)
-
   useEffect(() => {
-    setFilter(tab.filter)
-    setProjection(tab.projection)
-    setSort(tab.sort)
+    setFilter(orDefault(tab.filter))
+    setProjection(orDefault(tab.projection))
+    setSort(orDefault(tab.sort))
     setLimit(tab.limit > 0 ? String(tab.limit) : '')
-    setSortOpen(false)
-    setProjectionOpen(false)
   }, [tab.id, tab.filter, tab.projection, tab.sort, tab.limit])
+
+  // Cache distinct top-level field names from the most recent fetch so
+  // the editor can offer them as completions in any of the 3 fields.
+  useEffect(() => {
+    const names = new Set<string>()
+    for (const env of documents) {
+      for (const key of Object.keys(env.data)) names.add(key)
+    }
+    setDocumentFieldNames(names)
+  }, [documents])
 
   const filterStatus = useMemo(() => parseStatus(filter), [filter])
   const projectionStatus = useMemo(() => parseStatus(projection), [projection])
@@ -58,24 +64,12 @@ export function QueryToolbar({
     projectionStatus.kind === 'invalid' ||
     sortStatus.kind === 'invalid'
 
-  const sortShown = sortOpen || sort.trim().length > 0
-  const projectionShown = projectionOpen || projection.trim().length > 0
-
   const apply = (e?: FormEvent) => {
     e?.preventDefault()
     if (anyInvalid) return
     const limitNum = Number.parseInt(limit, 10)
     const nextLimit = Number.isFinite(limitNum) && limitNum > 0 ? limitNum : 0
     onApply({ filter, projection, sort, skip: 0, limit: nextLimit })
-  }
-
-  const removeSort = () => {
-    setSort('')
-    setSortOpen(false)
-  }
-  const removeProjection = () => {
-    setProjection('')
-    setProjectionOpen(false)
   }
 
   const formatField = (status: ParseStatus, setter: (next: string) => void): void => {
@@ -94,7 +88,7 @@ export function QueryToolbar({
         <div className="min-w-0 flex-1">
           <QueryEditor
             value={filter}
-            onChange={setFilter}
+            onChange={(next) => setFilter(orDefault(next))}
             onSubmit={() => apply()}
             onFormat={() => formatField(filterStatus, setFilter)}
             hasError={filterStatus.kind === 'invalid'}
@@ -139,46 +133,26 @@ export function QueryToolbar({
       </div>
 
       <div className="flex flex-wrap items-stretch gap-1.5">
-        {sortShown ? (
-          <OptionRow
-            icon={<ArrowDownUp className="h-3 w-3" />}
-            label="Sort"
-            placeholder="{ createdAt: -1 }"
-            value={sort}
-            onChange={setSort}
-            onSubmit={() => apply()}
-            onFormat={() => formatField(sortStatus, setSort)}
-            onRemove={removeSort}
-            status={sortStatus}
-            autoFocus={sortOpen && sort.length === 0}
-          />
-        ) : (
-          <AddPill
-            icon={<ArrowDownUp className="h-3 w-3" />}
-            label="Sort"
-            onClick={() => setSortOpen(true)}
-          />
-        )}
-        {projectionShown ? (
-          <OptionRow
-            icon={<Eye className="h-3 w-3" />}
-            label="Projection"
-            placeholder="{ name: 1, _id: 0 }"
-            value={projection}
-            onChange={setProjection}
-            onSubmit={() => apply()}
-            onFormat={() => formatField(projectionStatus, setProjection)}
-            onRemove={removeProjection}
-            status={projectionStatus}
-            autoFocus={projectionOpen && projection.length === 0}
-          />
-        ) : (
-          <AddPill
-            icon={<Eye className="h-3 w-3" />}
-            label="Projection"
-            onClick={() => setProjectionOpen(true)}
-          />
-        )}
+        <OptionRow
+          icon={<ArrowDownUp className="h-3 w-3" />}
+          label="Sort"
+          placeholder="{ createdAt: -1 }"
+          value={sort}
+          onChange={setSort}
+          onSubmit={() => apply()}
+          onFormat={() => formatField(sortStatus, setSort)}
+          status={sortStatus}
+        />
+        <OptionRow
+          icon={<Eye className="h-3 w-3" />}
+          label="Projection"
+          placeholder="{ name: 1, _id: 0 }"
+          value={projection}
+          onChange={setProjection}
+          onSubmit={() => apply()}
+          onFormat={() => formatField(projectionStatus, setProjection)}
+          status={projectionStatus}
+        />
       </div>
     </form>
   )
@@ -212,9 +186,7 @@ function OptionRow({
   onChange,
   onSubmit,
   onFormat,
-  onRemove,
-  status,
-  autoFocus
+  status
 }: {
   icon: React.ReactNode
   label: string
@@ -223,9 +195,7 @@ function OptionRow({
   onChange: (next: string) => void
   onSubmit: () => void
   onFormat: () => void
-  onRemove: () => void
   status: ParseStatus
-  autoFocus?: boolean
 }) {
   return (
     <div className="flex min-w-0 flex-1 basis-[280px] items-stretch gap-1.5">
@@ -236,14 +206,13 @@ function OptionRow({
       <div className="min-w-0 flex-1">
         <QueryEditor
           value={value}
-          onChange={onChange}
+          onChange={(next) => onChange(orDefault(next))}
           onSubmit={onSubmit}
           onFormat={onFormat}
           hasError={status.kind === 'invalid'}
           minHeight={30}
           maxHeight={120}
           placeholder={placeholder}
-          autoFocus={autoFocus}
           actions={
             <>
               {status.kind === 'invalid' && <ErrorTag title={status.error} />}
@@ -252,16 +221,6 @@ function OptionRow({
           }
         />
       </div>
-      <Tooltip content={`Remove ${label.toLowerCase()}`}>
-        <button
-          type="button"
-          onClick={onRemove}
-          className="flex h-[30px] shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent/60 hover:text-foreground"
-          aria-label={`Remove ${label.toLowerCase()}`}
-        >
-          <X className="h-3.5 w-3.5" />
-        </button>
-      </Tooltip>
     </div>
   )
 }
@@ -284,31 +243,6 @@ function FormatButton({ disabled, onClick }: { disabled: boolean; onClick: () =>
         <Wand2 className="h-3 w-3" />
       </button>
     </Tooltip>
-  )
-}
-
-function AddPill({
-  icon,
-  label,
-  onClick
-}: {
-  icon: React.ReactNode
-  label: string
-  onClick: () => void
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        'flex h-7 items-center gap-1.5 rounded-md border border-dashed border-input bg-transparent px-2.5 text-[11px] text-muted-foreground transition-colors',
-        'hover:border-input/80 hover:bg-accent/40 hover:text-foreground'
-      )}
-    >
-      <Plus className="h-3 w-3" />
-      {icon}
-      <span className="uppercase tracking-wider">{label}</span>
-    </button>
   )
 }
 
