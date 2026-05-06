@@ -4,6 +4,7 @@ import log from 'electron-log/main'
 import { registerIpcHandlers } from './ipc/router'
 import { ConnectionService } from './services/ConnectionService'
 import { DatabaseService } from './services/DatabaseService'
+import { IndexService } from './services/IndexService'
 import { QueryService } from './services/QueryService'
 import { UserService } from './services/UserService'
 import { ConnectionsRepository } from './stores/ConnectionsRepository'
@@ -87,10 +88,11 @@ app.whenReady().then(() => {
   const databases = new DatabaseService(connections)
   const queries = new QueryService(connections)
   const users = new UserService(connections)
+  const indexes = new IndexService(connections)
   services.repo = repo
   services.connections = connections
 
-  registerIpcHandlers({ repo, connections, databases, queries, users })
+  registerIpcHandlers({ repo, connections, databases, queries, users, indexes })
 
   createWindow()
 

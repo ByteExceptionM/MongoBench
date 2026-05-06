@@ -36,6 +36,8 @@ export type AdvancedOptions = {
   replicaSet?: string
   readPreference?: ReadPreference
   uuidEncoding?: UuidEncoding
+  /** IANA timezone name. Used purely for date *display* — storage stays UTC. */
+  timezone?: string
   maxPoolSize?: number
   minPoolSize?: number
   connectTimeoutMS?: number
@@ -64,6 +66,7 @@ export type StoredConnection = {
   replicaSet?: string
   readPreference?: ReadPreference
   uuidEncoding?: UuidEncoding
+  timezone?: string
   maxPoolSize?: number
   minPoolSize?: number
   connectTimeoutMS?: number
@@ -90,6 +93,7 @@ export type ConnectionConfig = {
   replicaSet?: string
   readPreference?: ReadPreference
   uuidEncoding?: UuidEncoding
+  timezone?: string
   maxPoolSize?: number
   minPoolSize?: number
   connectTimeoutMS?: number
@@ -120,6 +124,7 @@ export type ConnectionInput = {
   replicaSet?: string
   readPreference?: ReadPreference
   uuidEncoding?: UuidEncoding
+  timezone?: string
   maxPoolSize?: number
   minPoolSize?: number
   connectTimeoutMS?: number
@@ -337,6 +342,23 @@ export type DeleteOneResponse = {
   deletedCount: number
 }
 
+/**
+ * Bulk delete by document `_id`. Skips the per-document hash check that
+ * `deleteOne` performs — bulk delete is reached via an explicit confirm
+ * dialog so a stale view between selection and delete is acceptable.
+ */
+export type DeleteManyRequest = {
+  connectionId: string
+  db: string
+  coll: string
+  /** Canonical-EJSON strings of each `_id`, mirroring `DocumentEnvelope.id`. */
+  ids: string[]
+}
+
+export type DeleteManyResponse = {
+  deletedCount: number
+}
+
 export type ReplaceOneResponse = {
   matched: number
   modified: number
@@ -380,4 +402,84 @@ export type CollectionRef = {
   connectionId: string
   db: string
   coll: string
+}
+
+/** A single field's role inside an index key spec. */
+export type IndexKeyDirection = 1 | -1 | 'text' | '2dsphere' | '2d' | 'hashed'
+
+/**
+ * One index, as reported by `listIndexes`. The `key` object's insertion
+ * order matters — it determines compound-index field order.
+ */
+export type IndexInfo = {
+  name: string
+  key: Record<string, IndexKeyDirection | string | number>
+  v?: number
+  unique?: boolean
+  sparse?: boolean
+  expireAfterSeconds?: number
+  partialFilterExpression?: Record<string, unknown>
+  collation?: Record<string, unknown>
+  hidden?: boolean
+  background?: boolean
+  /** text index — per-field weight overrides. */
+  weights?: Record<string, number>
+  /** text index — language used when a doc has no explicit `language`. */
+  default_language?: string
+  /** text index — name of the per-document field that overrides language. */
+  language_override?: string
+  textIndexVersion?: number
+  '2dsphereIndexVersion'?: number
+  /** 2d index — geohash precision. */
+  bits?: number
+  /** 2d index — coordinate min/max. */
+  min?: number
+  max?: number
+  /** wildcard index — projection of paths to include/exclude. */
+  wildcardProjection?: Record<string, unknown>
+  /** Bytes on disk; populated from collStats's `indexSizes`. */
+  size?: number
+}
+
+export type IndexCreateOptions = {
+  name?: string
+  unique?: boolean
+  sparse?: boolean
+  hidden?: boolean
+  /** TTL — only meaningful on a single-field date index. */
+  expireAfterSeconds?: number
+  /** Canonical-EJSON object string. */
+  partialFilterExpression?: string
+  /** Canonical-EJSON object string. */
+  collation?: string
+  /** text index — Canonical-EJSON object string mapping field → weight. */
+  weights?: string
+  /** text index. */
+  default_language?: string
+  /** text index. */
+  language_override?: string
+  textIndexVersion?: number
+  '2dsphereIndexVersion'?: number
+  /** 2d index. */
+  bits?: number
+  min?: number
+  max?: number
+  /** wildcard index — Canonical-EJSON object string. */
+  wildcardProjection?: string
+}
+
+export type CreateIndexPayload = {
+  connectionId: string
+  db: string
+  coll: string
+  /** Canonical-EJSON object string of the key spec; field order is preserved. */
+  keys: string
+  options?: IndexCreateOptions
+}
+
+export type DropIndexPayload = {
+  connectionId: string
+  db: string
+  coll: string
+  name: string
 }

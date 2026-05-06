@@ -140,6 +140,7 @@ export class ConnectionsRepository {
       ...(input.replicaSet !== undefined ? { replicaSet: input.replicaSet } : {}),
       ...(input.readPreference !== undefined ? { readPreference: input.readPreference } : {}),
       ...(input.uuidEncoding !== undefined ? { uuidEncoding: input.uuidEncoding } : {}),
+      ...(input.timezone !== undefined ? { timezone: input.timezone } : {}),
       ...(input.maxPoolSize !== undefined ? { maxPoolSize: input.maxPoolSize } : {}),
       ...(input.minPoolSize !== undefined ? { minPoolSize: input.minPoolSize } : {}),
       ...(input.connectTimeoutMS !== undefined ? { connectTimeoutMS: input.connectTimeoutMS } : {}),

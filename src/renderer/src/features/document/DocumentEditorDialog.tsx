@@ -13,115 +13,145 @@ import {
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { api, ApiError } from '@/lib/api'
-import type { DocumentEnvelope } from '@shared/types'
+import { parseMongoQuery } from '@/lib/mongoQueryLang'
+import { serializeMongoValue } from '@/lib/mongoQuerySerialize'
+import type { DocumentEnvelope, UuidEncoding } from '@shared/types'
 
-export type EditorMode = 'view' | 'edit' | 'duplicate'
+export type EditorMode = 'view' | 'edit' | 'duplicate' | 'insert'
 
 type Props = {
   mode: EditorMode | null
+  /** Required for view / edit / duplicate. Ignored for insert. */
   envelope: DocumentEnvelope | null
   connectionId: string
   db: string
   coll: string
+  uuidEncoding: UuidEncoding
+  /** IANA zone for ISODate display. Saves convert back to UTC ms. */
+  timezone: string
   onClose: () => void
 }
 
 const TITLES: Record<EditorMode, string> = {
   view: 'View document',
   edit: 'Edit document',
-  duplicate: 'Duplicate document'
+  duplicate: 'Duplicate document',
+  insert: 'Insert document'
 }
 
 const DESCRIPTIONS: Record<EditorMode, string> = {
-  view: 'Read-only canonical EJSON. Hover field values for full content.',
-  edit: 'Canonical EJSON — every BSON type is wrapped to preserve precision on save.',
-  duplicate:
-    'Canonical EJSON of the original. The _id has been removed so a new one will be assigned on insert.'
+  view: 'Read-only — BSON types render as ObjectId / ISODate / UUID / NumberLong / NumberDecimal.',
+  edit: 'Edit using mongo shell syntax — ObjectId("…"), ISODate("…"), NumberLong("…"), UUID/JUUID, regex literals.',
+  duplicate: 'A copy with the original _id removed. Save inserts a new document with a fresh _id.',
+  insert:
+    'New document — mongo shell syntax. Leave _id out and the server will assign a fresh ObjectId.'
 }
 
-function canonicalOf(envelope: DocumentEnvelope): string {
-  if (typeof envelope.canonical === 'string' && envelope.canonical.length > 0) {
-    return envelope.canonical
-  }
-  // Defensive fallback for envelopes from older main builds (pre-M3) where
-  // `canonical` was not populated. Uses the relaxed `data` field; loses
-  // strict EJSON type fidelity but is still readable.
-  return JSON.stringify(envelope.data ?? {}, null, 2)
+const INSERT_TEMPLATE = '{\n  \n}'
+
+/**
+ * Read the canonical EJSON document carried by an envelope, then re-render
+ * it as MongoDB-shell-syntax text. Falls back to the relaxed `data` view
+ * if the envelope predates M3 (no canonical string set).
+ */
+function shellRenderOf(
+  envelope: DocumentEnvelope,
+  uuidEncoding: UuidEncoding,
+  timezone: string
+): string {
+  const source =
+    envelope.canonical && envelope.canonical.length > 0
+      ? safeJsonParse(envelope.canonical)
+      : envelope.data
+  return serializeMongoValue(source, { uuidEncoding, timezone, indent: 2 })
 }
 
-function stripId(canonical: string): string {
+function safeJsonParse(text: string): unknown {
   try {
-    const parsed = JSON.parse(canonical) as Record<string, unknown>
-    if (Object.prototype.hasOwnProperty.call(parsed, '_id')) {
-      const { _id: _omit, ...rest } = parsed
-      return JSON.stringify(rest, null, 2)
-    }
-    return JSON.stringify(parsed, null, 2)
+    return JSON.parse(text)
   } catch {
-    return canonical
+    return {}
   }
 }
 
-function pretty(canonical: string): string {
-  try {
-    return JSON.stringify(JSON.parse(canonical), null, 2)
-  } catch {
-    return canonical
-  }
+function stripIdShell(input: string, uuidEncoding: UuidEncoding, timezone: string): string {
+  const parsed = parseMongoQuery(input)
+  if (!parsed.ok) return input
+  const value = parsed.value
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return input
+  const obj = value as Record<string, unknown>
+  if (!('_id' in obj)) return input
+  const { _id: _omit, ...rest } = obj
+  return serializeMongoValue(rest, { uuidEncoding, timezone, indent: 2 })
 }
 
-export function DocumentEditorDialog({ mode, envelope, connectionId, db, coll, onClose }: Props) {
-  const open = mode !== null && envelope !== null
+export function DocumentEditorDialog({
+  mode,
+  envelope,
+  connectionId,
+  db,
+  coll,
+  uuidEncoding,
+  timezone,
+  onClose
+}: Props) {
+  const open = mode !== null && (mode === 'insert' || envelope !== null)
   const [value, setValue] = useState('')
-  const [parseError, setParseError] = useState<string | null>(null)
   const [serverError, setServerError] = useState<string | null>(null)
   const queryClient = useQueryClient()
 
   useEffect(() => {
-    if (!envelope || !mode) return
-    const canonical = canonicalOf(envelope)
-    setValue(mode === 'duplicate' ? stripId(canonical) : pretty(canonical))
-    setParseError(null)
+    if (!mode) return
     setServerError(null)
-  }, [envelope, mode])
-
-  const validation = useMemo(() => {
-    if (mode === 'view') return null
-    try {
-      const parsed = JSON.parse(value) as unknown
-      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-        return 'Document must be a JSON object'
-      }
-      return null
-    } catch (e) {
-      return e instanceof Error ? e.message : 'Invalid JSON'
+    if (mode === 'insert') {
+      setValue(INSERT_TEMPLATE)
+      return
     }
-  }, [value, mode])
+    if (!envelope) return
+    const rendered = shellRenderOf(envelope, uuidEncoding, timezone)
+    setValue(mode === 'duplicate' ? stripIdShell(rendered, uuidEncoding, timezone) : rendered)
+  }, [envelope, mode, uuidEncoding, timezone])
 
-  useEffect(() => setParseError(validation), [validation])
+  const compiled = useMemo(() => {
+    if (mode === 'view' || mode === null) return { ok: true as const, ejson: '' }
+    const parsed = parseMongoQuery(value)
+    if (!parsed.ok) return { ok: false as const, error: parsed.error }
+    if (parsed.value === null || typeof parsed.value !== 'object' || Array.isArray(parsed.value)) {
+      return { ok: false as const, error: 'Document must be an object' }
+    }
+    return { ok: true as const, ejson: parsed.ejson }
+  }, [value, mode])
 
   const saveMutation = useMutation({
     mutationFn: async () => {
-      if (!envelope || !mode) throw new Error('No document loaded')
+      if (!mode) throw new Error('No editor mode')
+      if (!compiled.ok) throw new Error(compiled.error)
       if (mode === 'edit') {
+        if (!envelope) throw new Error('No document loaded')
         return api.query.replaceOne({
           connectionId,
           db,
           coll,
           id: envelope.id,
           expectedHash: envelope.hash,
-          replacement: value
+          replacement: compiled.ejson
         })
       }
-      if (mode === 'duplicate') {
-        return api.query.insertOne({ connectionId, db, coll, document: value })
+      if (mode === 'duplicate' || mode === 'insert') {
+        return api.query.insertOne({ connectionId, db, coll, document: compiled.ejson })
       }
       throw new Error('Cannot save in view mode')
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['find'] })
       void queryClient.invalidateQueries({ queryKey: ['count'] })
-      toast.success(mode === 'duplicate' ? 'Document inserted' : 'Document updated')
+      const successMessage =
+        mode === 'edit'
+          ? 'Document updated'
+          : mode === 'duplicate'
+            ? 'Document duplicated'
+            : 'Document inserted'
+      toast.success(successMessage)
       onClose()
     },
     onError: (e: unknown) => {
@@ -134,11 +164,19 @@ export function DocumentEditorDialog({ mode, envelope, connectionId, db, coll, o
     if (!next && !saveMutation.isPending) onClose()
   }
 
-  if (!mode || !envelope) return null
+  if (!mode) return null
+
+  // Insert needs neither envelope nor _id; the others can't render without one.
+  if (mode !== 'insert' && !envelope) return null
+
+  const parseError = compiled.ok ? null : compiled.error
+  const isReadOnly = mode === 'view'
+  const ctaLabel =
+    mode === 'edit' ? 'Save changes' : mode === 'duplicate' ? 'Insert duplicate' : 'Insert document'
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="flex max-h-[85vh] max-w-4xl flex-col gap-4">
+      <DialogContent className="flex h-[92vh] w-[95vw] max-w-[1400px] flex-col gap-4 sm:!max-w-[1400px]">
         <DialogHeader>
           <DialogTitle>{TITLES[mode]}</DialogTitle>
           <DialogDescription>
@@ -147,16 +185,30 @@ export function DocumentEditorDialog({ mode, envelope, connectionId, db, coll, o
             </span>
             {' — '}
             {DESCRIPTIONS[mode]}
+            {timezone !== 'UTC' && (
+              <>
+                {' '}
+                <span className="text-muted-foreground/80">
+                  Dates show in <span className="font-mono text-foreground">{timezone}</span> and
+                  save back as UTC.
+                </span>
+              </>
+            )}
           </DialogDescription>
         </DialogHeader>
 
-        <div className="h-[55vh] overflow-hidden rounded-md border">
+        <div
+          className={
+            'min-h-0 flex-1 overflow-hidden rounded-md border ' +
+            (parseError ? 'border-destructive ring-1 ring-destructive/40' : '')
+          }
+        >
           <Editor
-            key={`${envelope.id}::${mode}`}
+            key={mode === 'insert' ? 'insert' : `${envelope?.id}::${mode}`}
             height="100%"
             width="100%"
             value={value}
-            language="json"
+            language="mongo-shell"
             theme="mongobench-dark"
             loading={
               <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
@@ -165,8 +217,8 @@ export function DocumentEditorDialog({ mode, envelope, connectionId, db, coll, o
             }
             onChange={(v) => setValue(v ?? '')}
             options={{
-              readOnly: mode === 'view',
-              domReadOnly: mode === 'view',
+              readOnly: isReadOnly,
+              domReadOnly: isReadOnly,
               minimap: { enabled: false },
               fontFamily: 'JetBrains Mono, ui-monospace, monospace',
               fontSize: 12,
@@ -176,7 +228,10 @@ export function DocumentEditorDialog({ mode, envelope, connectionId, db, coll, o
               tabSize: 2,
               wordWrap: 'on',
               renderLineHighlight: 'gutter',
-              padding: { top: 8, bottom: 8 }
+              padding: { top: 8, bottom: 8 },
+              autoClosingBrackets: 'always',
+              autoClosingQuotes: 'always',
+              bracketPairColorization: { enabled: true }
             }}
           />
         </div>
@@ -189,9 +244,9 @@ export function DocumentEditorDialog({ mode, envelope, connectionId, db, coll, o
 
         <DialogFooter>
           <Button variant="outline" onClick={onClose} disabled={saveMutation.isPending}>
-            {mode === 'view' ? 'Close' : 'Cancel'}
+            {isReadOnly ? 'Close' : 'Cancel'}
           </Button>
-          {mode !== 'view' && (
+          {!isReadOnly && (
             <Button
               disabled={parseError !== null || saveMutation.isPending}
               onClick={() => {
@@ -200,7 +255,7 @@ export function DocumentEditorDialog({ mode, envelope, connectionId, db, coll, o
               }}
             >
               {saveMutation.isPending && <Loader2 className="animate-spin" />}
-              {mode === 'edit' ? 'Save changes' : 'Insert'}
+              {ctaLabel}
             </Button>
           )}
         </DialogFooter>

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { CheckCircle2, Loader2, XCircle } from 'lucide-react'
+import { CheckCircle2, ChevronDown, ChevronRight, Loader2, XCircle } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -21,7 +21,7 @@ import {
   SelectTrigger,
   SelectValue
 } from '@/components/ui/select'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { TimezoneSelect } from './TimezoneSelect'
 import { api, ApiError } from '@/lib/api'
 import { queryKeys } from '@/lib/queryClient'
 import { cn } from '@/lib/utils'
@@ -49,6 +49,7 @@ type FormState = {
   replicaSet: string
   readPreference: ReadPreference | 'default'
   uuidEncoding: UuidEncoding
+  timezone: string
   maxPoolSize: string
   minPoolSize: string
   connectTimeoutMS: string
@@ -72,6 +73,7 @@ const emptyForm = (): FormState => ({
   replicaSet: '',
   readPreference: 'default',
   uuidEncoding: 'default',
+  timezone: 'UTC',
   maxPoolSize: '',
   minPoolSize: '',
   connectTimeoutMS: '',
@@ -95,6 +97,7 @@ const fromConnection = (conn: ConnectionConfig): FormState => ({
   replicaSet: conn.replicaSet ?? '',
   readPreference: conn.readPreference ?? 'default',
   uuidEncoding: conn.uuidEncoding ?? 'default',
+  timezone: conn.timezone ?? 'UTC',
   maxPoolSize: conn.maxPoolSize !== undefined ? String(conn.maxPoolSize) : '',
   minPoolSize: conn.minPoolSize !== undefined ? String(conn.minPoolSize) : '',
   connectTimeoutMS: conn.connectTimeoutMS !== undefined ? String(conn.connectTimeoutMS) : '',
@@ -127,6 +130,9 @@ function buildInput(form: FormState): ConnectionInput {
   if (form.replicaSet.trim().length > 0) input.replicaSet = form.replicaSet.trim()
   if (form.readPreference !== 'default') input.readPreference = form.readPreference
   if (form.uuidEncoding !== 'default') input.uuidEncoding = form.uuidEncoding
+  if (form.timezone.trim().length > 0 && form.timezone.trim() !== 'UTC') {
+    input.timezone = form.timezone.trim()
+  }
   const maxPool = parseInt(form.maxPoolSize)
   if (maxPool !== undefined) input.maxPoolSize = maxPool
   const minPool = parseInt(form.minPoolSize)
@@ -208,7 +214,7 @@ export function ConnectionFormDialog({ open, onOpenChange, connection }: Props) 
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col gap-4">
         <DialogHeader>
           <DialogTitle>{isEdit ? 'Edit connection' : 'New connection'}</DialogTitle>
           <DialogDescription>
@@ -217,7 +223,7 @@ export function ConnectionFormDialog({ open, onOpenChange, connection }: Props) 
           </DialogDescription>
         </DialogHeader>
 
-        <div className="grid gap-5">
+        <div className="-mr-2 grid min-h-0 flex-1 gap-5 overflow-y-auto pr-2">
           <Field label="Name" htmlFor="conn-name">
             <Input
               id="conn-name"
@@ -287,243 +293,233 @@ export function ConnectionFormDialog({ open, onOpenChange, connection }: Props) 
           <button
             type="button"
             onClick={() => setAdvancedOpen((v) => !v)}
-            className="text-left text-xs font-medium text-muted-foreground hover:text-foreground"
+            className="-mx-1 flex items-center gap-1 rounded-md px-1 py-1 text-left text-xs font-medium text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
           >
-            {advancedOpen ? '− Hide' : '+ Show'} advanced options
+            {advancedOpen ? (
+              <ChevronDown className="h-3.5 w-3.5" />
+            ) : (
+              <ChevronRight className="h-3.5 w-3.5" />
+            )}
+            Advanced options
           </button>
 
           {advancedOpen && (
-            <div className="rounded-md border bg-card p-3">
-              <Tabs defaultValue="auth">
-                <TabsList className="w-full justify-start">
-                  <TabsTrigger value="auth">Auth</TabsTrigger>
-                  <TabsTrigger value="topology">Topology</TabsTrigger>
-                  <TabsTrigger value="pool">Pool &amp; timeouts</TabsTrigger>
-                  <TabsTrigger value="behavior">Behavior</TabsTrigger>
-                  <TabsTrigger value="tls">TLS</TabsTrigger>
-                </TabsList>
-
-                <TabsContent value="auth" className="grid gap-4">
-                  <div className="grid grid-cols-2 gap-4">
-                    <Field label="Auth mechanism" htmlFor="conn-mech">
-                      <Select
-                        value={form.authMechanism}
-                        onValueChange={(v) => update('authMechanism', v as AuthMechanism)}
-                      >
-                        <SelectTrigger id="conn-mech">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="DEFAULT">Default</SelectItem>
-                          <SelectItem value="SCRAM-SHA-256">SCRAM-SHA-256</SelectItem>
-                          <SelectItem value="SCRAM-SHA-1">SCRAM-SHA-1</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </Field>
-                    <Field label="Auth source" htmlFor="conn-authsource">
-                      <Input
-                        id="conn-authsource"
-                        placeholder="admin"
-                        value={form.authSource}
-                        onChange={(e) => update('authSource', e.target.value)}
-                      />
-                    </Field>
-                  </div>
-                </TabsContent>
-
-                <TabsContent value="topology" className="grid gap-4">
-                  <div className="grid grid-cols-2 gap-4">
-                    <Field
-                      label="Replica set"
-                      htmlFor="conn-rs"
-                      hint="Optional explicit replica-set name."
+            <div className="grid gap-5 rounded-md border bg-card/40 p-4">
+              <Section title="Authentication">
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="Auth mechanism" htmlFor="conn-mech">
+                    <Select
+                      value={form.authMechanism}
+                      onValueChange={(v) => update('authMechanism', v as AuthMechanism)}
                     >
-                      <Input
-                        id="conn-rs"
-                        placeholder="rs0"
-                        value={form.replicaSet}
-                        onChange={(e) => update('replicaSet', e.target.value)}
-                      />
-                    </Field>
-                    <Field label="Read preference" htmlFor="conn-readpref">
-                      <Select
-                        value={form.readPreference}
-                        onValueChange={(v) =>
-                          update('readPreference', v as FormState['readPreference'])
-                        }
-                      >
-                        <SelectTrigger id="conn-readpref">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="default">Default (primary)</SelectItem>
-                          <SelectItem value="primary">primary</SelectItem>
-                          <SelectItem value="primaryPreferred">primaryPreferred</SelectItem>
-                          <SelectItem value="secondary">secondary</SelectItem>
-                          <SelectItem value="secondaryPreferred">secondaryPreferred</SelectItem>
-                          <SelectItem value="nearest">nearest</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </Field>
-                  </div>
-                  <div className="flex items-center justify-between rounded-md border border-border/60 bg-background/40 px-3 py-2">
-                    <div className="grid">
-                      <Label htmlFor="conn-direct" className="cursor-pointer">
-                        Direct connection
-                      </Label>
-                      <span className="text-[10px] text-muted-foreground">
-                        skip topology discovery, talk to one node only
-                      </span>
-                    </div>
-                    <Switch
-                      id="conn-direct"
-                      checked={form.directConnection}
-                      onCheckedChange={(v) => update('directConnection', v)}
+                      <SelectTrigger id="conn-mech">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="DEFAULT">Default</SelectItem>
+                        <SelectItem value="SCRAM-SHA-256">SCRAM-SHA-256</SelectItem>
+                        <SelectItem value="SCRAM-SHA-1">SCRAM-SHA-1</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <Field label="Auth source" htmlFor="conn-authsource">
+                    <Input
+                      id="conn-authsource"
+                      placeholder="admin"
+                      value={form.authSource}
+                      onChange={(e) => update('authSource', e.target.value)}
                     />
-                  </div>
-                </TabsContent>
+                  </Field>
+                </div>
+              </Section>
 
-                <TabsContent value="pool" className="grid gap-4">
-                  <div className="grid grid-cols-2 gap-4">
-                    <Field label="Max pool size" htmlFor="conn-maxpool">
-                      <Input
-                        id="conn-maxpool"
-                        type="number"
-                        min={1}
-                        max={10000}
-                        placeholder="100"
-                        value={form.maxPoolSize}
-                        onChange={(e) => update('maxPoolSize', e.target.value)}
-                      />
-                    </Field>
-                    <Field label="Min pool size" htmlFor="conn-minpool">
-                      <Input
-                        id="conn-minpool"
-                        type="number"
-                        min={0}
-                        max={10000}
-                        placeholder="0"
-                        value={form.minPoolSize}
-                        onChange={(e) => update('minPoolSize', e.target.value)}
-                      />
-                    </Field>
-                  </div>
-                  <div className="grid grid-cols-3 gap-4">
-                    <Field label="Connect (ms)" htmlFor="conn-ctimeout">
-                      <Input
-                        id="conn-ctimeout"
-                        type="number"
-                        min={500}
-                        max={120000}
-                        placeholder="30000"
-                        value={form.connectTimeoutMS}
-                        onChange={(e) => update('connectTimeoutMS', e.target.value)}
-                      />
-                    </Field>
-                    <Field label="Socket (ms)" htmlFor="conn-stimeout">
-                      <Input
-                        id="conn-stimeout"
-                        type="number"
-                        min={500}
-                        max={600000}
-                        placeholder="0 = off"
-                        value={form.socketTimeoutMS}
-                        onChange={(e) => update('socketTimeoutMS', e.target.value)}
-                      />
-                    </Field>
-                    <Field label="Server select (ms)" htmlFor="conn-timeout">
-                      <Input
-                        id="conn-timeout"
-                        type="number"
-                        min={1000}
-                        max={60000}
-                        value={form.serverSelectionTimeoutMS}
-                        onChange={(e) => update('serverSelectionTimeoutMS', e.target.value)}
-                      />
-                    </Field>
-                  </div>
-                </TabsContent>
-
-                <TabsContent value="behavior" className="grid gap-4">
-                  <div className="grid grid-cols-2 gap-4">
-                    <Field
-                      label="UUID encoding"
-                      htmlFor="conn-uuid"
-                      hint="How BSON Binary values should be displayed in the table."
+              <Section title="Topology">
+                <div className="grid grid-cols-2 gap-3">
+                  <Field
+                    label="Replica set"
+                    htmlFor="conn-rs"
+                    hint="Optional explicit replica-set name."
+                  >
+                    <Input
+                      id="conn-rs"
+                      placeholder="rs0"
+                      value={form.replicaSet}
+                      onChange={(e) => update('replicaSet', e.target.value)}
+                    />
+                  </Field>
+                  <Field label="Read preference" htmlFor="conn-readpref">
+                    <Select
+                      value={form.readPreference}
+                      onValueChange={(v) =>
+                        update('readPreference', v as FormState['readPreference'])
+                      }
                     >
-                      <Select
-                        value={form.uuidEncoding}
-                        onValueChange={(v) => update('uuidEncoding', v as UuidEncoding)}
-                      >
-                        <SelectTrigger id="conn-uuid">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="default">Default — only subType 04</SelectItem>
-                          <SelectItem value="java">Java legacy — also subType 03</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </Field>
-                    <Field label="App name" htmlFor="conn-appname">
-                      <Input
-                        id="conn-appname"
-                        value={form.appName}
-                        onChange={(e) => update('appName', e.target.value)}
-                      />
-                    </Field>
-                  </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <Field label="Retry writes" htmlFor="conn-rwrites">
-                      <Select
-                        value={form.retryWrites}
-                        onValueChange={(v) => update('retryWrites', v as FormState['retryWrites'])}
-                      >
-                        <SelectTrigger id="conn-rwrites">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="default">Default</SelectItem>
-                          <SelectItem value="on">On</SelectItem>
-                          <SelectItem value="off">Off</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </Field>
-                    <Field label="Retry reads" htmlFor="conn-rreads">
-                      <Select
-                        value={form.retryReads}
-                        onValueChange={(v) => update('retryReads', v as FormState['retryReads'])}
-                      >
-                        <SelectTrigger id="conn-rreads">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="default">Default</SelectItem>
-                          <SelectItem value="on">On</SelectItem>
-                          <SelectItem value="off">Off</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </Field>
-                  </div>
-                </TabsContent>
+                      <SelectTrigger id="conn-readpref">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="default">Default (primary)</SelectItem>
+                        <SelectItem value="primary">primary</SelectItem>
+                        <SelectItem value="primaryPreferred">primaryPreferred</SelectItem>
+                        <SelectItem value="secondary">secondary</SelectItem>
+                        <SelectItem value="secondaryPreferred">secondaryPreferred</SelectItem>
+                        <SelectItem value="nearest">nearest</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                </div>
+                <ToggleRow
+                  id="conn-direct"
+                  label="Direct connection"
+                  hint="Skip topology discovery, talk to one node only."
+                  checked={form.directConnection}
+                  onCheckedChange={(v) => update('directConnection', v)}
+                />
+              </Section>
 
-                <TabsContent value="tls">
-                  <div className="flex items-center justify-between rounded-md border border-border/60 bg-background/40 px-3 py-2">
-                    <div className="grid">
-                      <Label htmlFor="conn-tls" className="cursor-pointer">
-                        TLS / SSL
-                      </Label>
-                      <span className="text-[10px] text-muted-foreground">
-                        enabled automatically for mongodb+srv://
-                      </span>
-                    </div>
-                    <Switch
-                      id="conn-tls"
-                      checked={form.tls}
-                      onCheckedChange={(v) => update('tls', v)}
+              <Section title="Pool & timeouts">
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="Max pool size" htmlFor="conn-maxpool">
+                    <Input
+                      id="conn-maxpool"
+                      type="number"
+                      min={1}
+                      max={10000}
+                      placeholder="100"
+                      value={form.maxPoolSize}
+                      onChange={(e) => update('maxPoolSize', e.target.value)}
                     />
-                  </div>
-                </TabsContent>
-              </Tabs>
+                  </Field>
+                  <Field label="Min pool size" htmlFor="conn-minpool">
+                    <Input
+                      id="conn-minpool"
+                      type="number"
+                      min={0}
+                      max={10000}
+                      placeholder="0"
+                      value={form.minPoolSize}
+                      onChange={(e) => update('minPoolSize', e.target.value)}
+                    />
+                  </Field>
+                </div>
+                <div className="grid grid-cols-3 gap-3">
+                  <Field label="Connect (ms)" htmlFor="conn-ctimeout">
+                    <Input
+                      id="conn-ctimeout"
+                      type="number"
+                      min={500}
+                      max={120000}
+                      placeholder="30000"
+                      value={form.connectTimeoutMS}
+                      onChange={(e) => update('connectTimeoutMS', e.target.value)}
+                    />
+                  </Field>
+                  <Field label="Socket (ms)" htmlFor="conn-stimeout">
+                    <Input
+                      id="conn-stimeout"
+                      type="number"
+                      min={500}
+                      max={600000}
+                      placeholder="0 = off"
+                      value={form.socketTimeoutMS}
+                      onChange={(e) => update('socketTimeoutMS', e.target.value)}
+                    />
+                  </Field>
+                  <Field label="Server select (ms)" htmlFor="conn-timeout">
+                    <Input
+                      id="conn-timeout"
+                      type="number"
+                      min={1000}
+                      max={60000}
+                      value={form.serverSelectionTimeoutMS}
+                      onChange={(e) => update('serverSelectionTimeoutMS', e.target.value)}
+                    />
+                  </Field>
+                </div>
+              </Section>
+
+              <Section title="Behavior">
+                <div className="grid grid-cols-2 gap-3">
+                  <Field
+                    label="UUID encoding"
+                    htmlFor="conn-uuid"
+                    hint="How BSON Binary values render in the table."
+                  >
+                    <Select
+                      value={form.uuidEncoding}
+                      onValueChange={(v) => update('uuidEncoding', v as UuidEncoding)}
+                    >
+                      <SelectTrigger id="conn-uuid">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="default">Default — only subType 04</SelectItem>
+                        <SelectItem value="java">Java legacy — also subType 03</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <Field label="App name" htmlFor="conn-appname">
+                    <Input
+                      id="conn-appname"
+                      value={form.appName}
+                      onChange={(e) => update('appName', e.target.value)}
+                    />
+                  </Field>
+                </div>
+                <Field
+                  label="Display timezone"
+                  htmlFor="conn-tz"
+                  hint="Dates render in this zone in the table and editor. Stored values stay UTC."
+                >
+                  <TimezoneSelect
+                    id="conn-tz"
+                    value={form.timezone}
+                    onChange={(v) => update('timezone', v)}
+                  />
+                </Field>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="Retry writes" htmlFor="conn-rwrites">
+                    <Select
+                      value={form.retryWrites}
+                      onValueChange={(v) => update('retryWrites', v as FormState['retryWrites'])}
+                    >
+                      <SelectTrigger id="conn-rwrites">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="default">Default</SelectItem>
+                        <SelectItem value="on">On</SelectItem>
+                        <SelectItem value="off">Off</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <Field label="Retry reads" htmlFor="conn-rreads">
+                    <Select
+                      value={form.retryReads}
+                      onValueChange={(v) => update('retryReads', v as FormState['retryReads'])}
+                    >
+                      <SelectTrigger id="conn-rreads">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="default">Default</SelectItem>
+                        <SelectItem value="on">On</SelectItem>
+                        <SelectItem value="off">Off</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                </div>
+              </Section>
+
+              <Section title="TLS / SSL">
+                <ToggleRow
+                  id="conn-tls"
+                  label="Use TLS"
+                  hint="Enabled automatically for mongodb+srv://."
+                  checked={form.tls}
+                  onCheckedChange={(v) => update('tls', v)}
+                />
+              </Section>
             </div>
           )}
 
@@ -566,10 +562,52 @@ function Field({
   children: React.ReactNode
 }) {
   return (
-    <div className="grid gap-1.5">
-      <Label htmlFor={htmlFor}>{label}</Label>
+    <div className="grid min-w-0 content-start gap-1.5">
+      <Label
+        htmlFor={htmlFor}
+        className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground"
+      >
+        {label}
+      </Label>
       {children}
-      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
+      {hint && <p className="text-[10px] leading-snug text-muted-foreground">{hint}</p>}
+    </div>
+  )
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="grid gap-2.5">
+      <h3 className="text-[11px] font-semibold uppercase tracking-wider text-foreground/80">
+        {title}
+      </h3>
+      <div className="grid gap-3">{children}</div>
+    </section>
+  )
+}
+
+function ToggleRow({
+  id,
+  label,
+  hint,
+  checked,
+  onCheckedChange
+}: {
+  id: string
+  label: string
+  hint?: string
+  checked: boolean
+  onCheckedChange: (v: boolean) => void
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-background/40 px-3 py-2">
+      <div className="grid min-w-0 gap-0.5">
+        <Label htmlFor={id} className="cursor-pointer text-xs font-medium">
+          {label}
+        </Label>
+        {hint && <span className="text-[10px] leading-snug text-muted-foreground">{hint}</span>}
+      </div>
+      <Switch id={id} checked={checked} onCheckedChange={onCheckedChange} />
     </div>
   )
 }

@@ -1,4 +1,5 @@
 import type { DocumentEnvelope, UuidEncoding } from '@shared/types'
+import { formatDateInZone } from './dateZone'
 
 export type BsonKind =
   | 'objectid'
@@ -19,6 +20,8 @@ export type BsonKind =
 export type InspectOptions = {
   /** Apply this connection's UUID encoding when rendering Binary values. */
   uuidEncoding?: UuidEncoding
+  /** Render BSON Dates in this IANA timezone. Defaults to UTC. */
+  timezone?: string
 }
 
 export type Inspected = {
@@ -29,26 +32,13 @@ export type Inspected = {
 const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
 
-/**
- * Format an ISO timestamp (or `Date`) as `dd.MM.yyyy HH:mm:ss:fff` in the
- * user's local timezone. Used for table cells; the view/edit dialogs keep
- * the raw canonical EJSON to preserve type precision.
- */
-const pad = (n: number, w = 2): string => String(n).padStart(w, '0')
+const formatDateValue = (input: string | number | Date, tz: string): string =>
+  formatDateInZone(input, tz)
 
-const formatDateValue = (input: string | number | Date): string => {
-  const d = input instanceof Date ? input : new Date(input)
-  if (Number.isNaN(d.getTime())) return String(input)
-  return (
-    `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()} ` +
-    `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`
-  )
-}
-
-const longDateToFormatted = (long: string): string => {
+const longDateToFormatted = (long: string, tz: string): string => {
   const ms = Number(long)
   if (!Number.isFinite(ms)) return long
-  return formatDateValue(new Date(ms))
+  return formatDateInZone(new Date(ms), tz)
 }
 
 export function inspectBson(value: unknown, options: InspectOptions = {}): Inspected {
@@ -66,9 +56,10 @@ export function inspectBson(value: unknown, options: InspectOptions = {}): Inspe
     }
     if ('$date' in value) {
       const raw = value['$date']
-      if (typeof raw === 'string') return { kind: 'date', display: formatDateValue(raw) }
+      const tz = options.timezone ?? 'UTC'
+      if (typeof raw === 'string') return { kind: 'date', display: formatDateValue(raw, tz) }
       if (isPlainRecord(raw) && typeof raw['$numberLong'] === 'string') {
-        return { kind: 'date', display: longDateToFormatted(raw['$numberLong']) }
+        return { kind: 'date', display: longDateToFormatted(raw['$numberLong'], tz) }
       }
       return { kind: 'date', display: String(raw) }
     }

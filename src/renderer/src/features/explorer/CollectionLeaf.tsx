@@ -1,7 +1,17 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { ClipboardCopy, Eye, Info, Loader2, Pencil, Table, Trash2 } from 'lucide-react'
+import {
+  ClipboardCopy,
+  Eye,
+  FilePlus2,
+  Info,
+  KeyRound,
+  Loader2,
+  Pencil,
+  Table,
+  Trash2
+} from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useTabsStore } from '@/store/tabs'
 import { api, ApiError } from '@/lib/api'
@@ -24,9 +34,12 @@ import {
   AlertDialogTitle
 } from '@/components/ui/alert-dialog'
 import { CollectionInfoDialog } from '@/features/collection/CollectionInfoDialog'
+import { IndexesDialog } from '@/features/collection/IndexesDialog'
 import { RenameCollectionDialog } from '@/features/collection/RenameCollectionDialog'
+import { DocumentEditorDialog } from '@/features/document/DocumentEditorDialog'
+import { useQuery } from '@tanstack/react-query'
 
-type DialogState = 'info' | 'rename' | 'drop' | null
+type DialogState = 'info' | 'rename' | 'drop' | 'indexes' | 'insert' | null
 
 export function CollectionLeaf({
   connectionId,
@@ -46,6 +59,14 @@ export function CollectionLeaf({
   const isActive = activeTabId === tabId
   const [dialog, setDialog] = useState<DialogState>(null)
   const queryClient = useQueryClient()
+
+  const connectionsQuery = useQuery({
+    queryKey: queryKeys.connections,
+    queryFn: () => api.connections.list()
+  })
+  const conn = connectionsQuery.data?.find((c) => c.id === connectionId)
+  const uuidEncoding = conn?.uuidEncoding ?? 'default'
+  const timezone = conn?.timezone ?? 'UTC'
 
   const dropMutation = useMutation({
     mutationFn: () => api.collections.drop({ connectionId, db, coll: name }),
@@ -105,6 +126,14 @@ export function CollectionLeaf({
             Copy namespace
           </ContextMenuItem>
           <ContextMenuSeparator />
+          <ContextMenuItem onSelect={() => setDialog('insert')} disabled={type === 'view'}>
+            <FilePlus2 className="h-4 w-4" />
+            Insert document…
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => setDialog('indexes')} disabled={type === 'view'}>
+            <KeyRound className="h-4 w-4" />
+            Indexes…
+          </ContextMenuItem>
           <ContextMenuItem onSelect={() => setDialog('rename')} disabled={type === 'view'}>
             <Pencil className="h-4 w-4" />
             Rename…
@@ -125,6 +154,25 @@ export function CollectionLeaf({
         connectionId={connectionId}
         db={db}
         coll={name}
+        onClose={() => setDialog(null)}
+      />
+
+      <IndexesDialog
+        open={dialog === 'indexes'}
+        connectionId={connectionId}
+        db={db}
+        coll={name}
+        onClose={() => setDialog(null)}
+      />
+
+      <DocumentEditorDialog
+        mode={dialog === 'insert' ? 'insert' : null}
+        envelope={null}
+        connectionId={connectionId}
+        db={db}
+        coll={name}
+        uuidEncoding={uuidEncoding}
+        timezone={timezone}
         onClose={() => setDialog(null)}
       />
 

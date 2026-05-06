@@ -10,14 +10,19 @@ import type {
   ConnectionUpdatePayload,
   CountRequest,
   CountResponse,
+  CreateIndexPayload,
   CreateUserPayload,
   DatabaseInfo,
   DatabaseUser,
+  DeleteManyRequest,
+  DeleteManyResponse,
   DeleteOneRequest,
   DeleteOneResponse,
+  DropIndexPayload,
   DropUserPayload,
   FindRequest,
   FindResponse,
+  IndexInfo,
   InsertOneRequest,
   InsertOneResponse,
   RenameCollectionPayload,
@@ -69,7 +74,9 @@ const api: Api = {
     replaceOne: (request: ReplaceOneRequest) =>
       invoke<ReplaceOneResponse>('query:replaceOne', request),
     insertOne: (request: InsertOneRequest) => invoke<InsertOneResponse>('query:insertOne', request),
-    deleteOne: (request: DeleteOneRequest) => invoke<DeleteOneResponse>('query:deleteOne', request)
+    deleteOne: (request: DeleteOneRequest) => invoke<DeleteOneResponse>('query:deleteOne', request),
+    deleteMany: (request: DeleteManyRequest) =>
+      invoke<DeleteManyResponse>('query:deleteMany', request)
   },
   users: {
     list: (payload: { connectionId: string; db: string }) =>
@@ -77,6 +84,12 @@ const api: Api = {
     create: (payload: CreateUserPayload) => invoke<void>('users:create', payload),
     update: (payload: UpdateUserPayload) => invoke<void>('users:update', payload),
     drop: (payload: DropUserPayload) => invoke<void>('users:drop', payload)
+  },
+  indexes: {
+    list: (payload: { connectionId: string; db: string; coll: string }) =>
+      invoke<IndexInfo[]>('indexes:list', payload),
+    create: (payload: CreateIndexPayload) => invoke<{ name: string }>('indexes:create', payload),
+    drop: (payload: DropIndexPayload) => invoke<void>('indexes:drop', payload)
   }
 }
 

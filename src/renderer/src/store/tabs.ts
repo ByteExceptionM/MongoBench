@@ -6,12 +6,18 @@ export type CollectionTab = {
   db: string
   coll: string
   filter: string
+  /** EJSON object string. Empty = no projection. */
+  projection: string
+  /** EJSON object string. Empty = no explicit sort. */
+  sort: string
   skip: number
   /** 0 = no limit (return all matching documents). */
   limit: number
 }
 
-export type QueryPatch = Partial<Pick<CollectionTab, 'filter' | 'skip' | 'limit'>>
+export type QueryPatch = Partial<
+  Pick<CollectionTab, 'filter' | 'projection' | 'sort' | 'skip' | 'limit'>
+>
 
 const DEFAULT_LIMIT = 100
 
@@ -46,6 +52,8 @@ export const useTabsStore = create<TabsState>((set) => ({
         db,
         coll,
         filter: '',
+        projection: '',
+        sort: '',
         skip: 0,
         limit: DEFAULT_LIMIT
       }

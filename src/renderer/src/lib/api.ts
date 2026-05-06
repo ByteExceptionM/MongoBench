@@ -8,14 +8,19 @@ import type {
   ConnectionUpdatePayload,
   CountRequest,
   CountResponse,
+  CreateIndexPayload,
   CreateUserPayload,
   DatabaseInfo,
   DatabaseUser,
+  DeleteManyRequest,
+  DeleteManyResponse,
   DeleteOneRequest,
   DeleteOneResponse,
+  DropIndexPayload,
   DropUserPayload,
   FindRequest,
   FindResponse,
+  IndexInfo,
   InsertOneRequest,
   InsertOneResponse,
   RenameCollectionPayload,
@@ -94,7 +99,9 @@ export const api = {
     insertOne: (request: InsertOneRequest): Promise<InsertOneResponse> =>
       unwrap(window.api.query.insertOne(request)),
     deleteOne: (request: DeleteOneRequest): Promise<DeleteOneResponse> =>
-      unwrap(window.api.query.deleteOne(request))
+      unwrap(window.api.query.deleteOne(request)),
+    deleteMany: (request: DeleteManyRequest): Promise<DeleteManyResponse> =>
+      unwrap(window.api.query.deleteMany(request))
   },
   users: {
     list: (payload: { connectionId: string; db: string }): Promise<DatabaseUser[]> =>
@@ -102,5 +109,12 @@ export const api = {
     create: (payload: CreateUserPayload): Promise<void> => unwrap(window.api.users.create(payload)),
     update: (payload: UpdateUserPayload): Promise<void> => unwrap(window.api.users.update(payload)),
     drop: (payload: DropUserPayload): Promise<void> => unwrap(window.api.users.drop(payload))
+  },
+  indexes: {
+    list: (payload: { connectionId: string; db: string; coll: string }): Promise<IndexInfo[]> =>
+      unwrap(window.api.indexes.list(payload)),
+    create: (payload: CreateIndexPayload): Promise<{ name: string }> =>
+      unwrap(window.api.indexes.create(payload)),
+    drop: (payload: DropIndexPayload): Promise<void> => unwrap(window.api.indexes.drop(payload))
   }
 }

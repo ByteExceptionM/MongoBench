@@ -1,6 +1,8 @@
 import type { Document, Filter, Sort } from 'mongodb'
 import { EJSON } from 'bson'
 import type {
+  DeleteManyRequest,
+  DeleteManyResponse,
   DeleteOneRequest,
   DeleteOneResponse,
   DocumentEnvelope,
@@ -92,6 +94,21 @@ export class QueryService {
     const document = parseDocument(req.document)
     const result = await coll.insertOne(document)
     return { insertedId: toCanonicalString(result.insertedId) }
+  }
+
+  /**
+   * Bulk delete by `_id`. No per-document hash check — the renderer
+   * collects an explicit confirmation before calling this, so a stale
+   * view between selection and submission is acceptable. Documents that
+   * have already been deleted are silently skipped (driver semantics).
+   */
+  async deleteMany(req: DeleteManyRequest): Promise<DeleteManyResponse> {
+    if (req.ids.length === 0) return { deletedCount: 0 }
+    const client = this.connections.getClient(req.connectionId)
+    const coll = client.db(req.db).collection(req.coll)
+    const idValues = req.ids.map(parseId)
+    const result = await coll.deleteMany({ _id: { $in: idValues } } as Filter<Document>)
+    return { deletedCount: result.deletedCount }
   }
 
   async deleteOne(req: DeleteOneRequest): Promise<DeleteOneResponse> {

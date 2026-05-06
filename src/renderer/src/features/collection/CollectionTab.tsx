@@ -1,7 +1,9 @@
+import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ServerCrash } from 'lucide-react'
 import { api, ApiError } from '@/lib/api'
 import { queryKeys } from '@/lib/queryClient'
+import { parseMongoQuery } from '@/lib/mongoQueryLang'
 import {
   useTabsStore,
   type CollectionTab as CollectionTabType,
@@ -19,20 +21,50 @@ export function CollectionTab({ tab }: { tab: CollectionTabType }) {
     queryKey: queryKeys.connections,
     queryFn: () => api.connections.list()
   })
-  const uuidEncoding: UuidEncoding =
-    connectionsQuery.data?.find((c) => c.id === tab.connectionId)?.uuidEncoding ?? 'default'
+  const connectionConfig = connectionsQuery.data?.find((c) => c.id === tab.connectionId)
+  const uuidEncoding: UuidEncoding = connectionConfig?.uuidEncoding ?? 'default'
+  const timezone = connectionConfig?.timezone ?? 'UTC'
+
+  const compiled = useMemo(() => {
+    const f = parseMongoQuery(tab.filter)
+    const p = parseMongoQuery(tab.projection)
+    const s = parseMongoQuery(tab.sort)
+    return {
+      ok: f.ok && p.ok && s.ok,
+      filter: f.ok ? f.ejson : null,
+      projection: p.ok ? p.ejson : null,
+      sort: s.ok ? s.ejson : null,
+      error:
+        (!f.ok && `Filter: ${f.error}`) ||
+        (!p.ok && `Projection: ${p.error}`) ||
+        (!s.ok && `Sort: ${s.error}`) ||
+        null
+    }
+  }, [tab.filter, tab.projection, tab.sort])
 
   const findQuery = useQuery({
-    queryKey: queryKeys.find(tab.connectionId, tab.db, tab.coll, tab.filter, tab.skip, tab.limit),
+    queryKey: queryKeys.find(
+      tab.connectionId,
+      tab.db,
+      tab.coll,
+      tab.filter,
+      tab.projection,
+      tab.sort,
+      tab.skip,
+      tab.limit
+    ),
     queryFn: () =>
       api.query.find({
         connectionId: tab.connectionId,
         db: tab.db,
         coll: tab.coll,
-        filter: tab.filter || undefined,
+        ...(compiled.filter ? { filter: compiled.filter } : {}),
+        ...(compiled.projection ? { projection: compiled.projection } : {}),
+        ...(compiled.sort ? { sort: compiled.sort } : {}),
         skip: tab.skip,
         ...(tab.limit > 0 ? { limit: tab.limit } : {})
       }),
+    enabled: compiled.ok,
     placeholderData: (previous) => previous
   })
 
@@ -43,15 +75,12 @@ export function CollectionTab({ tab }: { tab: CollectionTabType }) {
         connectionId: tab.connectionId,
         db: tab.db,
         coll: tab.coll,
-        filter: tab.filter || undefined
-      })
+        ...(compiled.filter ? { filter: compiled.filter } : {})
+      }),
+    enabled: compiled.ok
   })
 
   const apply = (patch: QueryPatch) => setQuery(tab.id, patch)
-  const refresh = () => {
-    void findQuery.refetch()
-    void countQuery.refetch()
-  }
 
   return (
     <section className="flex h-full flex-col">
@@ -62,7 +91,17 @@ export function CollectionTab({ tab }: { tab: CollectionTabType }) {
         </div>
       </header>
 
-      <QueryToolbar tab={tab} onApply={apply} onRefresh={refresh} loading={findQuery.isFetching} />
+      <QueryToolbar
+        tab={tab}
+        onApply={apply}
+        loading={findQuery.isFetching}
+        documents={findQuery.data?.documents ?? []}
+        uuidEncoding={uuidEncoding}
+        timezone={timezone}
+        compiledFilter={compiled.filter}
+        compiledProjection={compiled.projection}
+        compiledSort={compiled.sort}
+      />
 
       <StatusBar
         loading={findQuery.isFetching || countQuery.isFetching}
@@ -76,7 +115,9 @@ export function CollectionTab({ tab }: { tab: CollectionTabType }) {
       />
 
       <div className="relative flex-1 overflow-hidden">
-        {findQuery.error instanceof ApiError ? (
+        {compiled.error ? (
+          <ErrorState message={compiled.error} />
+        ) : findQuery.error instanceof ApiError ? (
           <ErrorState message={findQuery.error.message} />
         ) : (
           <DocumentTable
@@ -85,6 +126,7 @@ export function CollectionTab({ tab }: { tab: CollectionTabType }) {
             db={tab.db}
             coll={tab.coll}
             uuidEncoding={uuidEncoding}
+            timezone={timezone}
           />
         )}
       </div>

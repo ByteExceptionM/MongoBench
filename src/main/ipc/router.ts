@@ -11,11 +11,15 @@ import {
   CountRequestSchema,
   CreateCollectionSchema,
   CreateDatabaseSchema,
+  CreateIndexSchema,
   CreateUserSchema,
   DatabaseRefSchema,
+  DeleteManyRequestSchema,
   DeleteOneRequestSchema,
+  DropIndexSchema,
   DropUserSchema,
   FindRequestSchema,
+  IndexesListSchema,
   InsertOneRequestSchema,
   RenameCollectionSchema,
   ReorderConnectionsSchema,
@@ -28,6 +32,7 @@ import { mapError } from '../lib/errorMap'
 import type { ConnectionsRepository } from '../stores/ConnectionsRepository'
 import type { ConnectionService } from '../services/ConnectionService'
 import type { DatabaseService } from '../services/DatabaseService'
+import type { IndexService } from '../services/IndexService'
 import type { QueryService } from '../services/QueryService'
 import type { UserService } from '../services/UserService'
 import { Channels } from './channels'
@@ -38,6 +43,7 @@ export type Services = {
   databases: DatabaseService
   queries: QueryService
   users: UserService
+  indexes: IndexService
 }
 
 function withResult<P, R>(
@@ -74,7 +80,7 @@ function withoutInput<R>(fn: () => Promise<R>): (event: IpcMainInvokeEvent) => P
 }
 
 export function registerIpcHandlers(services: Services): void {
-  const { repo, connections, databases, queries, users } = services
+  const { repo, connections, databases, queries, users, indexes } = services
 
   ipcMain.handle(
     Channels.ConnectionsList,
@@ -203,6 +209,32 @@ export function registerIpcHandlers(services: Services): void {
   ipcMain.handle(
     Channels.QueryDeleteOne,
     withResult(DeleteOneRequestSchema, (request) => queries.deleteOne(request))
+  )
+
+  ipcMain.handle(
+    Channels.QueryDeleteMany,
+    withResult(DeleteManyRequestSchema, (request) => queries.deleteMany(request))
+  )
+
+  ipcMain.handle(
+    Channels.IndexesList,
+    withResult(IndexesListSchema, ({ connectionId, db, coll }) =>
+      indexes.listIndexes(connectionId, db, coll)
+    )
+  )
+
+  ipcMain.handle(
+    Channels.IndexesCreate,
+    withResult(CreateIndexSchema, ({ connectionId, db, coll, keys, options }) =>
+      indexes.createIndex(connectionId, db, coll, keys, options)
+    )
+  )
+
+  ipcMain.handle(
+    Channels.IndexesDrop,
+    withResult(DropIndexSchema, ({ connectionId, db, coll, name }) =>
+      indexes.dropIndex(connectionId, db, coll, name)
+    )
   )
 
   ipcMain.handle(

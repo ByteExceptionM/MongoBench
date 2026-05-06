@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   AlertTriangle,
@@ -31,11 +31,8 @@ import { Chart, type ChartPoint } from '@/features/dashboard/Chart'
 import { api, ApiError } from '@/lib/api'
 import { queryKeys } from '@/lib/queryClient'
 import { cn } from '@/lib/utils'
+import { useServerStatsHistory, type StatsSample } from '@/store/serverStatsHistory'
 import type { ConnectionConfig, ServerStats } from '@shared/types'
-
-const HISTORY_SIZE = 60
-
-type Sample = { ts: number; data: ServerStats }
 
 type Series = {
   /** Total ops/sec across all opcounters. */
@@ -73,27 +70,20 @@ const PIE_COLORS = [
 ]
 
 export function ConnectionDashboard({ connection }: { connection: ConnectionConfig }) {
+  // The dashboard reads samples from `useServerStatsHistory`, which is
+  // populated continuously by `ServerStatsCollector` regardless of which
+  // tab the user is currently looking at. The local `useQuery` here is
+  // only used so that *opening* the dashboard for the first time doesn't
+  // sit empty for 5s — react-query's cache typically already holds a
+  // recent sample from the collector's most recent push.
   const { data, isLoading, error, refetch, isRefetching, dataUpdatedAt } = useQuery({
     queryKey: queryKeys.serverStats(connection.id),
-    queryFn: () => api.server.stats(connection.id),
-    refetchInterval: 5000
+    queryFn: () => api.server.stats(connection.id)
+    // No `refetchInterval` here — `ServerStatsCollector` owns the polling
+    // schedule and pushes fresh samples into this query's cache.
   })
 
-  // Sliding window of samples for sparklines.
-  const [history, setHistory] = useState<Sample[]>([])
-  useEffect(() => {
-    if (!data) return
-    setHistory((prev) => {
-      const next = [...prev, { ts: Date.now(), data }]
-      return next.length > HISTORY_SIZE ? next.slice(next.length - HISTORY_SIZE) : next
-    })
-  }, [data])
-
-  // Reset history when the connection changes.
-  useEffect(() => {
-    setHistory([])
-  }, [connection.id])
-
+  const history = useServerStatsHistory((s) => s.histories[connection.id]) ?? EMPTY_HISTORY
   const series = useMemo<Series>(() => derive(history), [history])
 
   return (
@@ -970,7 +960,9 @@ function timeAgo(timestamp: number): string {
 
 /* ---------- Time-series derivation ---------- */
 
-function derive(history: Sample[]): Series {
+const EMPTY_HISTORY: StatsSample[] = []
+
+function derive(history: StatsSample[]): Series {
   const empty: Series = {
     opsPerSec: [],
     opsPerSecByKind: { query: [], insert: [], update: [], delete: [] },

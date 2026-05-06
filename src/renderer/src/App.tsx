@@ -4,6 +4,7 @@ import { ConnectionsExplorer } from '@/features/explorer/ConnectionsExplorer'
 import { TabBar } from '@/features/tabs/TabBar'
 import { CollectionTab } from '@/features/collection/CollectionTab'
 import { ConnectionDashboard } from '@/features/dashboard/ConnectionDashboard'
+import { ServerStatsCollector } from '@/features/dashboard/ServerStatsCollector'
 import { CommandPalette } from '@/features/palette/CommandPalette'
 import { Welcome } from '@/features/welcome/Welcome'
 import { useTabsStore } from '@/store/tabs'
@@ -37,6 +38,7 @@ export default function App() {
 
   return (
     <div className="flex h-full w-full bg-background text-foreground">
+      <ServerStatsCollector />
       <ConnectionsExplorer />
       <main className="flex min-w-0 flex-1 flex-col">
         <TabBar />

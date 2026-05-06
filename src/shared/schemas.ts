@@ -34,6 +34,7 @@ export const ConnectionInputSchema = z
     replicaSet: z.string().trim().max(120).optional(),
     readPreference: ReadPreferenceSchema.optional(),
     uuidEncoding: UuidEncodingSchema.optional(),
+    timezone: z.string().trim().min(1).max(120).optional(),
     maxPoolSize: z.number().int().min(1).max(10_000).optional(),
     minPoolSize: z.number().int().min(0).max(10_000).optional(),
     connectTimeoutMS: z.number().int().min(500).max(120_000).optional(),
@@ -218,5 +219,67 @@ export const DeleteOneRequestSchema = z
     coll: collName,
     id: idString,
     expectedHash: hashString
+  })
+  .strict()
+
+export const DeleteManyRequestSchema = z
+  .object({
+    connectionId: z.string().uuid(),
+    db: dbName,
+    coll: collName,
+    ids: z.array(idString).min(1).max(10_000)
+  })
+  .strict()
+
+const indexName = z
+  .string()
+  .min(1)
+  .max(127)
+  .refine((v) => !v.includes('$') && !v.includes('\0'), 'invalid index name')
+
+const ejsonObject = z
+  .string()
+  .min(2)
+  .max(64 * 1024)
+
+export const IndexCreateOptionsSchema = z
+  .object({
+    name: indexName.optional(),
+    unique: z.boolean().optional(),
+    sparse: z.boolean().optional(),
+    hidden: z.boolean().optional(),
+    expireAfterSeconds: z.number().int().min(0).max(2_147_483_647).optional(),
+    partialFilterExpression: ejsonObject.optional(),
+    collation: ejsonObject.optional(),
+    weights: ejsonObject.optional(),
+    default_language: z.string().trim().min(1).max(40).optional(),
+    language_override: z.string().trim().min(1).max(120).optional(),
+    textIndexVersion: z.number().int().min(1).max(3).optional(),
+    '2dsphereIndexVersion': z.number().int().min(1).max(3).optional(),
+    bits: z.number().int().min(1).max(32).optional(),
+    min: z.number().optional(),
+    max: z.number().optional(),
+    wildcardProjection: ejsonObject.optional()
+  })
+  .strict()
+
+export const IndexesListSchema = CollectionRefSchema
+
+export const CreateIndexSchema = z
+  .object({
+    connectionId: z.string().uuid(),
+    db: dbName,
+    coll: collName,
+    keys: ejsonObject,
+    options: IndexCreateOptionsSchema.optional()
+  })
+  .strict()
+
+export const DropIndexSchema = z
+  .object({
+    connectionId: z.string().uuid(),
+    db: dbName,
+    coll: collName,
+    name: indexName
   })
   .strict()

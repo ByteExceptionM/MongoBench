@@ -7,14 +7,19 @@ import type {
   ConnectionUpdatePayload,
   CountRequest,
   CountResponse,
+  CreateIndexPayload,
   CreateUserPayload,
   DatabaseInfo,
   DatabaseUser,
+  DeleteManyRequest,
+  DeleteManyResponse,
   DeleteOneRequest,
   DeleteOneResponse,
+  DropIndexPayload,
   DropUserPayload,
   FindRequest,
   FindResponse,
+  IndexInfo,
   InsertOneRequest,
   InsertOneResponse,
   RenameCollectionPayload,
@@ -79,6 +84,7 @@ export type Api = {
     replaceOne: (request: ReplaceOneRequest) => Promise<Result<ReplaceOneResponse>>
     insertOne: (request: InsertOneRequest) => Promise<Result<InsertOneResponse>>
     deleteOne: (request: DeleteOneRequest) => Promise<Result<DeleteOneResponse>>
+    deleteMany: (request: DeleteManyRequest) => Promise<Result<DeleteManyResponse>>
   }
 
   users: {
@@ -86,5 +92,15 @@ export type Api = {
     create: (payload: CreateUserPayload) => Promise<Result<void>>
     update: (payload: UpdateUserPayload) => Promise<Result<void>>
     drop: (payload: DropUserPayload) => Promise<Result<void>>
+  }
+
+  indexes: {
+    list: (payload: {
+      connectionId: string
+      db: string
+      coll: string
+    }) => Promise<Result<IndexInfo[]>>
+    create: (payload: CreateIndexPayload) => Promise<Result<{ name: string }>>
+    drop: (payload: DropIndexPayload) => Promise<Result<void>>
   }
 }

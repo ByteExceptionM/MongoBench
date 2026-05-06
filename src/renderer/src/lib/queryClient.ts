@@ -25,6 +25,8 @@ export const queryKeys = {
   collections: (connectionId: string, db: string) => ['collections', connectionId, db] as const,
   collectionStats: (connectionId: string, db: string, coll: string) =>
     ['collection-stats', connectionId, db, coll] as const,
+  indexes: (connectionId: string, db: string, coll: string) =>
+    ['indexes', connectionId, db, coll] as const,
   users: (connectionId: string, db: string) => ['users', connectionId, db] as const,
   serverStats: (connectionId: string) => ['server-stats', connectionId] as const,
   find: (
@@ -32,9 +34,11 @@ export const queryKeys = {
     db: string,
     coll: string,
     filter: string,
+    projection: string,
+    sort: string,
     skip: number,
     limit: number
-  ) => ['find', connectionId, db, coll, { filter, skip, limit }] as const,
+  ) => ['find', connectionId, db, coll, { filter, projection, sort, skip, limit }] as const,
   count: (connectionId: string, db: string, coll: string, filter: string) =>
     ['count', connectionId, db, coll, { filter }] as const
 }

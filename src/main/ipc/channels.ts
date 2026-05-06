@@ -23,6 +23,10 @@ export const Channels = {
   CollectionsDrop: 'collections:drop',
   CollectionsRename: 'collections:rename',
 
+  IndexesList: 'indexes:list',
+  IndexesCreate: 'indexes:create',
+  IndexesDrop: 'indexes:drop',
+
   UsersList: 'users:list',
   UsersCreate: 'users:create',
   UsersUpdate: 'users:update',
@@ -32,7 +36,8 @@ export const Channels = {
   QueryCount: 'query:count',
   QueryReplaceOne: 'query:replaceOne',
   QueryInsertOne: 'query:insertOne',
-  QueryDeleteOne: 'query:deleteOne'
+  QueryDeleteOne: 'query:deleteOne',
+  QueryDeleteMany: 'query:deleteMany'
 } as const
 
 export type ChannelName = (typeof Channels)[keyof typeof Channels]
