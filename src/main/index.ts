@@ -1,11 +1,17 @@
 import { app, BrowserWindow, shell } from 'electron'
 import { join } from 'node:path'
+
+// build/icon.png in dev (app root) → resources/icon.png in packaged builds.
+const APP_ICON = app.isPackaged
+  ? join(process.resourcesPath, 'icon.png')
+  : join(app.getAppPath(), 'build', 'icon.png')
 import log from 'electron-log/main'
 import { registerIpcHandlers } from './ipc/router'
 import { ConnectionService } from './services/ConnectionService'
 import { DatabaseService } from './services/DatabaseService'
 import { IndexService } from './services/IndexService'
 import { QueryService } from './services/QueryService'
+import { initAutoUpdater } from './services/UpdaterService'
 import { UserService } from './services/UserService'
 import { ConnectionsRepository } from './stores/ConnectionsRepository'
 import { SecretsStore } from './stores/SecretsStore'
@@ -13,6 +19,10 @@ import { SecretsStore } from './stores/SecretsStore'
 log.initialize()
 log.transports.file.level = 'info'
 log.transports.console.level = 'debug'
+
+// Match electron-builder.yml appId. Without this, Windows taskbar groups
+// dev runs under the generic Electron icon.
+if (process.platform === 'win32') app.setAppUserModelId('io.masel.mongobench')
 
 const services = {
   repo: null as ConnectionsRepository | null,
@@ -28,6 +38,7 @@ function createWindow(): void {
     show: false,
     backgroundColor: '#0b0b0c',
     autoHideMenuBar: true,
+    icon: APP_ICON,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: true,
@@ -101,6 +112,7 @@ app.whenReady().then(() => {
   })
 
   log.info(`MongoBench ${app.getVersion()} ready`)
+  initAutoUpdater()
 })
 
 app.on('before-quit', async (event) => {

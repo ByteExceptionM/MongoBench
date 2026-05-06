@@ -10,30 +10,40 @@ files:
   - 'package.json'
   - '!**/.DS_Store'
   - '!**/*.map'
+# Ship the icon into the packaged app's resources/ folder so the main
+# process can set BrowserWindow.icon at runtime via process.resourcesPath.
+extraResources:
+  - from: build/icon.png
+    to: icon.png
 # `asar` is enabled by default; kept implicit. node-gyp / native deps
 # would need `asarUnpack` here — currently none.
 extraMetadata:
   main: out/main/index.js
 win:
-  # `portable` produces a single self-contained .exe — no installer flow,
-  # ideal for CI artifacts the user can just download and run.
+  # NSIS installer (per-user, no admin) — required by electron-updater
+  # for self-replacing updates. User picks install dir.
   target:
-    - target: portable
+    - target: nsis
       arch:
         - x64
-  artifactName: ${productName}-${version}-${arch}-portable.exe
+  artifactName: ${productName}-Setup-${version}-${arch}.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  allowElevation: false
+  deleteAppDataOnUninstall: false
 linux:
-  # AppImage is the most portable Linux format (one file, runs on any
-  # modern distro). Also build a tar.gz for users who prefer extracting.
+  # AppImage is supported by electron-updater for self-update on Linux.
   target:
     - target: AppImage
       arch:
         - x64
-    - target: tar.gz
-      arch:
-        - x64
   category: Development
   artifactName: ${productName}-${version}-${arch}.${ext}
-# We don't sign builds in CI — artifacts are for personal / dev use.
-# Disable native auto-update; nothing publishes anyway.
-publish: null
+# Builds are unsigned — first launch on Windows shows SmartScreen
+# (More info → Run anyway). Acceptable for personal-use distribution.
+publish:
+  provider: github
+  owner: ByteExceptionM
+  repo: MongoBench

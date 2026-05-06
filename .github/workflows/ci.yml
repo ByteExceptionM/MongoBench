@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches: [main]
+    tags: ['v*']
   workflow_dispatch:
 
 jobs:
@@ -37,6 +38,7 @@ jobs:
   package:
     name: package (${{ matrix.os }})
     needs: quality
+    if: github.ref_type != 'tag'
     strategy:
       fail-fast: false
       matrix:
@@ -61,7 +63,7 @@ jobs:
         run: npm ci
 
       # `electron-vite build` emits the bundles into `out/`; electron-builder
-      # then packages them into a portable .exe (Windows) or AppImage + tar.gz
+      # then packages them into an NSIS installer (Windows) or AppImage
       # (Linux). No code signing — artifacts are for direct download.
       - name: Build distributable
         run: npm run dist:${{ matrix.target }}
@@ -75,6 +77,40 @@ jobs:
           path: |
             dist/*.exe
             dist/*.AppImage
-            dist/*.tar.gz
           if-no-files-found: error
           retention-days: 14
+
+  release:
+    name: release (${{ matrix.os }})
+    needs: quality
+    if: github.ref_type == 'tag'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: win
+          - os: ubuntu-latest
+            target: linux
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # `--publish always` uploads the installer + latest.yml /
+      # latest-linux.yml metadata to the GitHub Release matching the tag.
+      # electron-updater reads latest.yml at runtime to detect new versions.
+      - name: Build and publish
+        run: npm run dist:${{ matrix.target }} -- --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

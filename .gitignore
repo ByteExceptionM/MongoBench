@@ -2,7 +2,8 @@ node_modules/
 dist/
 out/
 release/
-build/
+build/*
+!build/icon.png
 .cache/
 *.tsbuildinfo
 
