@@ -112,8 +112,6 @@ export type ConnectionInput = {
   username?: string
   /** Cleartext only in-flight; main encrypts immediately and discards. */
   password?: string
-  /** When true on update, removes any saved password regardless of the password field. */
-  clearStoredPassword?: boolean
   authSource?: string
   authMechanism?: AuthMechanism
   tls?: boolean

@@ -44,7 +44,6 @@ type FormState = {
   tls: boolean
   serverSelectionTimeoutMS: string
   appName: string
-  clearStoredPassword: boolean
   directConnection: boolean
   replicaSet: string
   readPreference: ReadPreference | 'default'
@@ -68,7 +67,6 @@ const emptyForm = (): FormState => ({
   tls: false,
   serverSelectionTimeoutMS: '3000',
   appName: 'MongoBench',
-  clearStoredPassword: false,
   directConnection: false,
   replicaSet: '',
   readPreference: 'default',
@@ -92,7 +90,6 @@ const fromConnection = (conn: ConnectionConfig): FormState => ({
   tls: conn.tls ?? false,
   serverSelectionTimeoutMS: String(conn.serverSelectionTimeoutMS ?? 3000),
   appName: conn.appName ?? 'MongoBench',
-  clearStoredPassword: false,
   directConnection: conn.directConnection ?? false,
   replicaSet: conn.replicaSet ?? '',
   readPreference: conn.readPreference ?? 'default',
@@ -119,7 +116,6 @@ function buildInput(form: FormState): ConnectionInput {
   }
   if (form.username.trim().length > 0) input.username = form.username.trim()
   if (form.password.length > 0) input.password = form.password
-  if (form.clearStoredPassword) input.clearStoredPassword = true
   if (form.authSource.trim().length > 0) input.authSource = form.authSource.trim()
   if (form.authMechanism !== 'DEFAULT') input.authMechanism = form.authMechanism
   if (form.tls) input.tls = true
@@ -277,18 +273,6 @@ export function ConnectionFormDialog({ open, onOpenChange, connection }: Props) 
               />
             </Field>
           </div>
-
-          {isEdit && connection?.hasStoredPassword && (
-            <label className="flex items-center gap-2 text-xs text-muted-foreground">
-              <input
-                type="checkbox"
-                checked={form.clearStoredPassword}
-                onChange={(e) => update('clearStoredPassword', e.target.checked)}
-                className="accent-primary"
-              />
-              Forget the saved password
-            </label>
-          )}
 
           <button
             type="button"

@@ -108,9 +108,7 @@ export class ConnectionsRepository {
     let encryptedPassword: string | undefined = existing?.encryptedPassword
     let storageUri = canonical.storageUri
 
-    if (input.clearStoredPassword) {
-      encryptedPassword = undefined
-    } else if (canonical.password !== null) {
+    if (canonical.password !== null) {
       encryptedPassword = this.secrets.encrypt(canonical.password)
     } else if (encryptedPassword !== undefined) {
       if (canonical.username === null) {

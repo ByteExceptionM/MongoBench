@@ -24,7 +24,6 @@ export const ConnectionInputSchema = z
       ),
     username: z.string().trim().max(255).optional(),
     password: z.string().max(1024).optional(),
-    clearStoredPassword: z.boolean().optional(),
     authSource: z.string().trim().max(120).optional(),
     authMechanism: AuthMechanismSchema.optional(),
     tls: z.boolean().optional(),

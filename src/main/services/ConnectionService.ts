@@ -98,7 +98,7 @@ export class ConnectionService {
     const formPassword =
       input.password !== undefined && input.password.length > 0 ? input.password : undefined
     let effectivePassword = formPassword
-    if (effectivePassword === undefined && existingId !== undefined && !input.clearStoredPassword) {
+    if (effectivePassword === undefined && existingId !== undefined) {
       const stored = await this.repo.getStored(existingId)
       if (stored) {
         effectivePassword = this.repo.decryptPassword(stored) ?? undefined
