@@ -35,11 +35,12 @@ export default function App() {
     queryFn: () => api.connections.list()
   })
   const dashboardConnection = !activeTab ? connections?.find((c) => activeIds.has(c.id)) : undefined
+  const onWelcome = !activeTab && !dashboardConnection
 
   return (
     <div className="flex h-full w-full bg-background text-foreground">
       <ServerStatsCollector />
-      <ConnectionsExplorer />
+      {!onWelcome && <ConnectionsExplorer />}
       <main className="flex min-w-0 flex-1 flex-col">
         <TabBar />
         <div className="min-h-0 flex-1">
