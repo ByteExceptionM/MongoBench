@@ -54,6 +54,7 @@ type PendingDelete =
 
 export function DocumentTable({
   documents,
+  loading,
   connectionId,
   db,
   coll,
@@ -61,6 +62,7 @@ export function DocumentTable({
   timezone
 }: {
   documents: DocumentEnvelope[]
+  loading: boolean
   connectionId: string
   db: string
   coll: string
@@ -313,7 +315,14 @@ export function DocumentTable({
   if (documents.length === 0) {
     return (
       <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-        No documents match the current filter.
+        {loading ? (
+          <span className="flex items-center gap-2">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Loading…
+          </span>
+        ) : (
+          'No documents match the current filter.'
+        )}
       </div>
     )
   }
