@@ -18,6 +18,27 @@ import type { CollectionInfo, ConnectionConfig, DatabaseInfo } from '@shared/typ
 
 const MAX_RESULTS = 50
 
+// Lower is better. Returns null when `target` doesn't even subsequence-match `q`.
+// Tiers: 0 = prefix, 100+pos = substring, 1000+spread = subsequence.
+function fuzzyScore(q: string, target: string): number | null {
+  if (!q) return 0
+  if (target.startsWith(q)) return 0
+  const sub = target.indexOf(q)
+  if (sub >= 0) return 100 + sub
+  let qi = 0
+  let first = -1
+  let last = -1
+  for (let i = 0; i < target.length && qi < q.length; i++) {
+    if (target[i] === q[qi]) {
+      if (first === -1) first = i
+      last = i
+      qi++
+    }
+  }
+  if (qi < q.length) return null
+  return 1000 + (last - first) * 2 + first
+}
+
 type CollectionItem = {
   connectionId: string
   connName: string
@@ -120,9 +141,14 @@ export function CommandPalette({ open, onOpenChange }: Props) {
     const scored: Array<{ item: CollectionItem; score: number }> = []
     for (const item of allItems) {
       const ns = `${item.db}.${item.coll}`.toLowerCase()
-      if (ns.startsWith(q)) scored.push({ item, score: 0 })
-      else if (item.coll.toLowerCase().startsWith(q)) scored.push({ item, score: 1 })
-      else if (ns.includes(q)) scored.push({ item, score: 2 })
+      const coll = item.coll.toLowerCase()
+      const nsScore = fuzzyScore(q, ns)
+      const collScore = fuzzyScore(q, coll)
+      const best =
+        nsScore !== null && collScore !== null
+          ? Math.min(nsScore, collScore)
+          : (nsScore ?? collScore)
+      if (best !== null) scored.push({ item, score: best })
       if (scored.length >= MAX_RESULTS * 4) break
     }
     return scored
@@ -135,12 +161,19 @@ export function CommandPalette({ open, onOpenChange }: Props) {
     const q = query.trim().toLowerCase()
     const list = connections ?? []
     if (!q) return list
-    return list.filter(
-      (c) =>
-        c.name.toLowerCase().includes(q) ||
-        (c.username ?? '').toLowerCase().includes(q) ||
-        c.uri.toLowerCase().includes(q)
-    )
+    const scored: Array<{ c: ConnectionConfig; score: number }> = []
+    for (const c of list) {
+      const fields = [c.name, c.username ?? '', c.uri]
+      let best: number | null = null
+      for (const f of fields) {
+        const s = fuzzyScore(q, f.toLowerCase())
+        if (s !== null && (best === null || s < best)) best = s
+      }
+      if (best !== null) scored.push({ c, score: best })
+    }
+    return scored
+      .sort((a, b) => a.score - b.score || a.c.name.localeCompare(b.c.name))
+      .map((s) => s.c)
   }, [connections, query])
 
   return (
