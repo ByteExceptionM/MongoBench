@@ -79,10 +79,14 @@ export function DocumentTable({
   const lastClickedIdRef = useRef<string | null>(null)
   const openTab = useTabsStore((s) => s.open)
 
+  // Prefetched in the background as soon as the table mounts so the
+  // ObjectId-lookup submenu (right-click on an ObjectId cell) doesn't have to
+  // wait on a fresh `listCollections` round-trip. listCollections with
+  // `nameOnly: true` is cheap, and the cache is shared across tabs of the
+  // same DB.
   const collectionsQuery = useQuery({
     queryKey: queryKeys.collections(connectionId, db),
-    queryFn: () => api.collections.list({ connectionId, db }),
-    enabled: activeLookup?.ref.kind === 'oid'
+    queryFn: () => api.collections.list({ connectionId, db })
   })
 
   /** User-set widths; auto-estimated widths fill in for the rest. */
@@ -474,17 +478,23 @@ export function DocumentTable({
                               Lookup ObjectId in…
                             </ContextMenuSubTrigger>
                             <ContextMenuSubContent className="max-h-72 overflow-y-auto">
-                              {collectionsQuery.isLoading && (
-                                <ContextMenuItem disabled>
-                                  <Loader2 className="h-4 w-4 animate-spin" />
-                                  Loading…
-                                </ContextMenuItem>
-                              )}
                               {(() => {
-                                const others = (collectionsQuery.data ?? []).filter(
-                                  (c) => c.name !== coll
-                                )
-                                if (collectionsQuery.isLoading) return null
+                                if (collectionsQuery.isPending) {
+                                  return (
+                                    <ContextMenuItem disabled>
+                                      <Loader2 className="h-4 w-4 animate-spin" />
+                                      Loading…
+                                    </ContextMenuItem>
+                                  )
+                                }
+                                if (collectionsQuery.isError) {
+                                  return (
+                                    <ContextMenuItem disabled>
+                                      Failed to load collections
+                                    </ContextMenuItem>
+                                  )
+                                }
+                                const others = collectionsQuery.data.filter((c) => c.name !== coll)
                                 if (others.length === 0) {
                                   return (
                                     <ContextMenuItem disabled>No other collections</ContextMenuItem>
