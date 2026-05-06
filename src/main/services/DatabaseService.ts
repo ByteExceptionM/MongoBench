@@ -9,7 +9,10 @@ export class DatabaseService {
 
   async listDatabases(connectionId: string): Promise<DatabaseInfo[]> {
     const client = this.connections.getClient(connectionId)
-    const result = (await client.db('admin').admin().listDatabases()) as {
+    const result = (await client
+      .db('admin')
+      .admin()
+      .listDatabases({ authorizedDatabases: true })) as {
       databases: Array<{ name: string; sizeOnDisk?: number; empty?: boolean }>
     }
     return result.databases
@@ -115,7 +118,7 @@ export class DatabaseService {
     const admin = client.db('admin')
     const [status, dbs] = await Promise.all([
       admin.command({ serverStatus: 1 }) as Promise<Record<string, unknown>>,
-      admin.admin().listDatabases() as Promise<{
+      admin.admin().listDatabases({ authorizedDatabases: true }) as Promise<{
         databases: Array<{ name: string; sizeOnDisk?: number; empty?: boolean }>
         totalSize?: number
       }>
