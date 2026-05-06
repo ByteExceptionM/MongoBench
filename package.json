@@ -1,6 +1,6 @@
 {
   "name": "mongobench",
-  "version": "0.0.1",
+  "version": "1.0.0",
   "private": true,
   "description": "A modern, dark-mode-first MongoDB GUI for Windows.",
   "author": "ByteExceptionM",

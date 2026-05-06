@@ -1,4 +1,4 @@
-appId: com.byteexceptionm.mongobench
+appId: io.masel.mongobench
 productName: MongoBench
 directories:
   output: dist
