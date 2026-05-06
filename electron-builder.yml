@@ -1,0 +1,39 @@
+appId: com.byteexceptionm.mongobench
+productName: MongoBench
+directories:
+  output: dist
+  buildResources: build
+# Bundle only the runtime artifacts produced by electron-vite plus the
+# package.json metadata. Source TypeScript and dev configs stay out.
+files:
+  - 'out/**/*'
+  - 'package.json'
+  - '!**/.DS_Store'
+  - '!**/*.map'
+# `asar` is enabled by default; kept implicit. node-gyp / native deps
+# would need `asarUnpack` here — currently none.
+extraMetadata:
+  main: out/main/index.js
+win:
+  # `portable` produces a single self-contained .exe — no installer flow,
+  # ideal for CI artifacts the user can just download and run.
+  target:
+    - target: portable
+      arch:
+        - x64
+  artifactName: ${productName}-${version}-${arch}-portable.exe
+linux:
+  # AppImage is the most portable Linux format (one file, runs on any
+  # modern distro). Also build a tar.gz for users who prefer extracting.
+  target:
+    - target: AppImage
+      arch:
+        - x64
+    - target: tar.gz
+      arch:
+        - x64
+  category: Development
+  artifactName: ${productName}-${version}-${arch}.${ext}
+# We don't sign builds in CI — artifacts are for personal / dev use.
+# Disable native auto-update; nothing publishes anyway.
+publish: null
