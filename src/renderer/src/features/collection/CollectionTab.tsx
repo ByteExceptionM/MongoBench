@@ -64,8 +64,7 @@ export function CollectionTab({ tab }: { tab: CollectionTabType }) {
         skip: tab.skip,
         ...(tab.limit > 0 ? { limit: tab.limit } : {})
       }),
-    enabled: compiled.ok,
-    placeholderData: (previous) => previous
+    enabled: compiled.ok
   })
 
   const countQuery = useQuery({
@@ -122,6 +121,7 @@ export function CollectionTab({ tab }: { tab: CollectionTabType }) {
         ) : (
           <DocumentTable
             documents={findQuery.data?.documents ?? []}
+            loading={findQuery.isFetching}
             connectionId={tab.connectionId}
             db={tab.db}
             coll={tab.coll}
