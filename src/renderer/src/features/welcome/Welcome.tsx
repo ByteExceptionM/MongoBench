@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Command, Database, Github, Keyboard, Loader2, Plug, Plus, ServerCrash } from 'lucide-react'
+import iconUrl from '@icon.png'
 import { Button } from '@/components/ui/button'
 import { ConnectionFormDialog } from '@/features/connections/ConnectionFormDialog'
 import { api, ApiError } from '@/lib/api'
@@ -89,9 +90,7 @@ function Brand() {
   return (
     <div className="grid gap-3">
       <div className="flex items-center gap-3">
-        <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10 text-primary ring-1 ring-primary/30">
-          <Database className="h-6 w-6" />
-        </div>
+        <img src={iconUrl} alt="MongoBench" className="h-12 w-12 rounded-2xl" />
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">MongoBench</h1>
           <p className="text-xs text-muted-foreground">A native MongoDB client.</p>

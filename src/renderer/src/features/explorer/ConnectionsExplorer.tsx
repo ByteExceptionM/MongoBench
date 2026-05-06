@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { Database, Loader2, Plus } from 'lucide-react'
+import { Loader2, Plus } from 'lucide-react'
+import iconUrl from '@icon.png'
 import { Button } from '@/components/ui/button'
 import {
   AlertDialog,
@@ -135,7 +136,7 @@ export function ConnectionsExplorer() {
     <aside className="flex h-full w-72 shrink-0 flex-col border-r bg-card/40">
       <div className="flex items-center justify-between border-b px-4 py-3">
         <div className="flex items-center gap-2">
-          <Database className="h-4 w-4 text-primary" />
+          <img src={iconUrl} alt="MongoBench" className="h-5 w-5 rounded" />
           <span className="text-sm font-semibold tracking-tight">MongoBench</span>
         </div>
         <Button size="icon" variant="ghost" onClick={openCreate} aria-label="New connection">
