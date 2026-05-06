@@ -5,6 +5,7 @@ import App from './App'
 import { Toaster } from '@/components/ui/sonner'
 import { queryClient } from '@/lib/queryClient'
 import '@/lib/monacoSetup'
+import '@fontsource-variable/geist'
 import './styles/globals.css'
 
 const rootElement = document.getElementById('root')
