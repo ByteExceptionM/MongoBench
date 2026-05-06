@@ -27,7 +27,13 @@ const tabId = (connectionId: string, db: string, coll: string): string =>
 type TabsState = {
   tabs: CollectionTab[]
   activeTabId: string | null
-  open: (params: { connectionId: string; db: string; coll: string }) => void
+  /**
+   * Open or focus the tab for the given collection. When `filter` is provided,
+   * a freshly opened tab starts with that filter, and an existing tab's filter
+   * is overwritten (with `skip` reset). Used by features like cross-collection
+   * ObjectId lookup that need to drop the user into a pre-filtered view.
+   */
+  open: (params: { connectionId: string; db: string; coll: string; filter?: string }) => void
   close: (id: string) => void
   activate: (id: string) => void
   setQuery: (id: string, patch: QueryPatch) => void
@@ -40,10 +46,17 @@ type TabsState = {
 export const useTabsStore = create<TabsState>((set) => ({
   tabs: [],
   activeTabId: null,
-  open: ({ connectionId, db, coll }) =>
+  open: ({ connectionId, db, coll, filter }) =>
     set((state) => {
       const id = tabId(connectionId, db, coll)
-      if (state.tabs.some((t) => t.id === id)) {
+      const existing = state.tabs.find((t) => t.id === id)
+      if (existing) {
+        if (filter !== undefined && filter !== existing.filter) {
+          return {
+            tabs: state.tabs.map((t) => (t.id === id ? { ...t, filter, skip: 0 } : t)),
+            activeTabId: id
+          }
+        }
         return { activeTabId: id }
       }
       const tab: CollectionTab = {
@@ -51,7 +64,7 @@ export const useTabsStore = create<TabsState>((set) => ({
         connectionId,
         db,
         coll,
-        filter: '',
+        filter: filter ?? '',
         projection: '',
         sort: '',
         skip: 0,

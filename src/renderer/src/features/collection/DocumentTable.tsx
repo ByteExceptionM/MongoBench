@@ -1,15 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { Check, Copy, Eye, FilePlus2, Loader2, Minus, Pencil, Trash2, X } from 'lucide-react'
+import { Check, Copy, Eye, FilePlus2, Link2, Loader2, Minus, Pencil, Trash2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger
 } from '@/components/ui/context-menu'
+import { queryKeys } from '@/lib/queryClient'
+import { useTabsStore } from '@/store/tabs'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -66,7 +71,17 @@ export function DocumentTable({
   const [editorState, setEditorState] = useState<RowMenuState>({ mode: null, envelope: null })
   const [pendingDelete, setPendingDelete] = useState<PendingDelete>(null)
   const [selected, setSelected] = useState<Set<string>>(() => new Set())
+  const [activeLookup, setActiveLookup] = useState<{ docId: string; ref: ExtractedRef } | null>(
+    null
+  )
   const lastClickedIdRef = useRef<string | null>(null)
+  const openTab = useTabsStore((s) => s.open)
+
+  const collectionsQuery = useQuery({
+    queryKey: queryKeys.collections(connectionId, db),
+    queryFn: () => api.collections.list({ connectionId, db }),
+    enabled: activeLookup?.ref.kind === 'oid'
+  })
 
   /** User-set widths; auto-estimated widths fill in for the rest. */
   const [userColumnWidths, setUserColumnWidths] = useState<Record<string, number>>({})
@@ -369,8 +384,14 @@ export function DocumentTable({
             <tbody>
               {documents.map((doc) => {
                 const isSelected = selected.has(doc.id)
+                const lookupRef = activeLookup?.docId === doc.id ? activeLookup.ref : null
                 return (
-                  <ContextMenu key={doc.id}>
+                  <ContextMenu
+                    key={doc.id}
+                    onOpenChange={(open) => {
+                      if (!open && activeLookup?.docId === doc.id) setActiveLookup(null)
+                    }}
+                  >
                     <ContextMenuTrigger asChild>
                       <tr
                         onClick={(e) => handleRowClick(doc.id, e)}
@@ -402,11 +423,85 @@ export function DocumentTable({
                             present={col in doc.data}
                             uuidEncoding={uuidEncoding}
                             timezone={timezone}
+                            onContextMenu={() => {
+                              const ref = col === '_id' ? null : extractRef(doc.data[col])
+                              if (ref) setActiveLookup({ docId: doc.id, ref })
+                              else setActiveLookup(null)
+                            }}
                           />
                         ))}
                       </tr>
                     </ContextMenuTrigger>
                     <ContextMenuContent>
+                      {lookupRef?.kind === 'dbref' && (
+                        <>
+                          <ContextMenuItem
+                            onSelect={() =>
+                              openTab({
+                                connectionId,
+                                db: lookupRef.db ?? db,
+                                coll: lookupRef.ref,
+                                filter: `{ _id: ObjectId("${lookupRef.oid}") }`
+                              })
+                            }
+                          >
+                            <Link2 className="h-4 w-4" />
+                            <span className="truncate">
+                              Open referenced doc in{' '}
+                              <span className="font-mono">
+                                {lookupRef.db ? `${lookupRef.db}.` : ''}
+                                {lookupRef.ref}
+                              </span>
+                            </span>
+                          </ContextMenuItem>
+                          <ContextMenuSeparator />
+                        </>
+                      )}
+                      {lookupRef?.kind === 'oid' && (
+                        <>
+                          <ContextMenuSub>
+                            <ContextMenuSubTrigger className="gap-2">
+                              <Link2 className="h-4 w-4" />
+                              Lookup ObjectId in…
+                            </ContextMenuSubTrigger>
+                            <ContextMenuSubContent className="max-h-72 overflow-y-auto">
+                              {collectionsQuery.isLoading && (
+                                <ContextMenuItem disabled>
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                  Loading…
+                                </ContextMenuItem>
+                              )}
+                              {(() => {
+                                const others = (collectionsQuery.data ?? []).filter(
+                                  (c) => c.name !== coll
+                                )
+                                if (collectionsQuery.isLoading) return null
+                                if (others.length === 0) {
+                                  return (
+                                    <ContextMenuItem disabled>No other collections</ContextMenuItem>
+                                  )
+                                }
+                                return others.map((c) => (
+                                  <ContextMenuItem
+                                    key={c.name}
+                                    onSelect={() =>
+                                      openTab({
+                                        connectionId,
+                                        db,
+                                        coll: c.name,
+                                        filter: `{ _id: ObjectId("${lookupRef.oid}") }`
+                                      })
+                                    }
+                                  >
+                                    <span className="truncate font-mono text-xs">{c.name}</span>
+                                  </ContextMenuItem>
+                                ))
+                              })()}
+                            </ContextMenuSubContent>
+                          </ContextMenuSub>
+                          <ContextMenuSeparator />
+                        </>
+                      )}
                       <ContextMenuItem
                         onSelect={() => setEditorState({ mode: 'view', envelope: doc })}
                       >
@@ -618,16 +713,21 @@ function Cell({
   value,
   present,
   uuidEncoding,
-  timezone
+  timezone,
+  onContextMenu
 }: {
   value: unknown
   present: boolean
   uuidEncoding: UuidEncoding
   timezone: string
+  onContextMenu?: () => void
 }) {
   if (!present) {
     return (
-      <td className="select-none border-b border-r border-border/30 px-3 py-1.5 text-muted-foreground/40">
+      <td
+        className="select-none border-b border-r border-border/30 px-3 py-1.5 text-muted-foreground/40"
+        onContextMenu={onContextMenu}
+      >
         —
       </td>
     )
@@ -642,6 +742,7 @@ function Cell({
     <td
       className="truncate border-b border-r border-border/30 px-3 py-1.5"
       title={inspected.display}
+      onContextMenu={onContextMenu}
     >
       <span
         contentEditable={false}
@@ -654,6 +755,48 @@ function Cell({
       </span>
     </td>
   )
+}
+
+const OID_RE = /^[a-f0-9]{24}$/i
+
+type ExtractedRef =
+  | { kind: 'oid'; oid: string }
+  | { kind: 'dbref'; ref: string; oid: string; db?: string }
+
+/** Returns the hex string when `value` is an EJSON ObjectId, else null. */
+function objectIdOf(value: unknown): string | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null
+  const oid = (value as Record<string, unknown>)['$oid']
+  if (typeof oid !== 'string' || !OID_RE.test(oid)) return null
+  return oid
+}
+
+/**
+ * Recognises a value the user can right-click to "jump to":
+ *   - plain ObjectId — needs the user to pick a target collection
+ *   - DBRef ({ $ref, $id, $db? }) where $id is an ObjectId — target collection
+ *     is encoded in the value, so we can offer a one-click action
+ *
+ * Only ObjectId-keyed DBRefs are handled. DBRefs with non-OID `$id` (string,
+ * number, etc.) are rare and deliberately skipped — building the right filter
+ * for those would require type-aware quoting we don't need yet.
+ */
+function extractRef(value: unknown): ExtractedRef | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null
+  const r = value as Record<string, unknown>
+  if (typeof r['$ref'] === 'string' && r['$ref'].length > 0 && '$id' in r) {
+    const innerOid = objectIdOf(r['$id'])
+    if (innerOid === null) return null
+    const dbref: { kind: 'dbref'; ref: string; oid: string; db?: string } = {
+      kind: 'dbref',
+      ref: r['$ref'],
+      oid: innerOid
+    }
+    if (typeof r['$db'] === 'string' && r['$db'].length > 0) dbref.db = r['$db']
+    return dbref
+  }
+  const oid = objectIdOf(value)
+  return oid !== null ? { kind: 'oid', oid } : null
 }
 
 function prettyJson(canonical: string): string {
