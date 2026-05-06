@@ -1,7 +1,17 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { Command, Database, Github, Keyboard, Loader2, Plug, Plus, ServerCrash } from 'lucide-react'
+import {
+  Command,
+  Database,
+  Github,
+  Keyboard,
+  Loader2,
+  Pencil,
+  Plug,
+  Plus,
+  ServerCrash
+} from 'lucide-react'
 import iconUrl from '@icon.png'
 import { Button } from '@/components/ui/button'
 import { ConnectionFormDialog } from '@/features/connections/ConnectionFormDialog'
@@ -23,7 +33,17 @@ import type { ConnectionConfig } from '@shared/types'
  */
 export function Welcome() {
   const [formOpen, setFormOpen] = useState(false)
+  const [editing, setEditing] = useState<ConnectionConfig | undefined>(undefined)
   const queryClient = useQueryClient()
+
+  const openCreate = () => {
+    setEditing(undefined)
+    setFormOpen(true)
+  }
+  const openEdit = (conn: ConnectionConfig) => {
+    setEditing(conn)
+    setFormOpen(true)
+  }
 
   const connections = useQuery({
     queryKey: queryKeys.connections,
@@ -42,7 +62,7 @@ export function Welcome() {
             <h2 className="text-sm font-semibold tracking-tight">
               {items.length === 0 ? 'Get started' : 'Saved connections'}
             </h2>
-            <Button size="sm" variant="outline" onClick={() => setFormOpen(true)}>
+            <Button size="sm" variant="outline" onClick={openCreate}>
               <Plus className="h-3.5 w-3.5" /> New connection
             </Button>
           </div>
@@ -61,7 +81,7 @@ export function Welcome() {
               </div>
             </div>
           ) : items.length === 0 ? (
-            <EmptyState onNew={() => setFormOpen(true)} />
+            <EmptyState onNew={openCreate} />
           ) : (
             <ul className="overflow-hidden rounded-lg border bg-card">
               {items.map((c, i) => (
@@ -69,6 +89,7 @@ export function Welcome() {
                   key={c.id}
                   connection={c}
                   isLast={i === items.length - 1}
+                  onEdit={() => openEdit(c)}
                   onAfterConnect={() => {
                     void queryClient.invalidateQueries({ queryKey: queryKeys.databases(c.id) })
                   }}
@@ -81,7 +102,7 @@ export function Welcome() {
         <Tips />
       </div>
 
-      <ConnectionFormDialog open={formOpen} onOpenChange={setFormOpen} />
+      <ConnectionFormDialog open={formOpen} onOpenChange={setFormOpen} connection={editing} />
     </section>
   )
 }
@@ -103,10 +124,12 @@ function Brand() {
 function ConnectionRow({
   connection,
   isLast,
+  onEdit,
   onAfterConnect
 }: {
   connection: ConnectionConfig
   isLast: boolean
+  onEdit: () => void
   onAfterConnect: () => void
 }) {
   const markConnected = useAppStore((s) => s.markConnected)
@@ -140,6 +163,15 @@ function ConnectionRow({
           {formatHostShort(connection)}
         </div>
       </div>
+      <Button
+        size="icon"
+        variant="ghost"
+        onClick={onEdit}
+        aria-label={`Edit ${connection.name}`}
+        title="Edit connection"
+      >
+        <Pencil className="h-3.5 w-3.5" />
+      </Button>
       <Button
         size="sm"
         onClick={() => connectMutation.mutate()}
