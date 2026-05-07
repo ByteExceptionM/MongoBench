@@ -33,6 +33,7 @@ export const Channels = {
   UsersDrop: 'users:drop',
 
   QueryFind: 'query:find',
+  QueryAggregate: 'query:aggregate',
   QueryCount: 'query:count',
   QueryReplaceOne: 'query:replaceOne',
   QueryInsertOne: 'query:insertOne',

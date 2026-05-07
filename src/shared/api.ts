@@ -1,4 +1,6 @@
 import type {
+  AggregateRequest,
+  AggregateResponse,
   CollectionInfo,
   CollectionStats,
   ConnectionConfig,
@@ -80,6 +82,7 @@ export type Api = {
 
   query: {
     find: (request: FindRequest) => Promise<Result<FindResponse>>
+    aggregate: (request: AggregateRequest) => Promise<Result<AggregateResponse>>
     count: (request: CountRequest) => Promise<Result<CountResponse>>
     replaceOne: (request: ReplaceOneRequest) => Promise<Result<ReplaceOneResponse>>
     insertOne: (request: InsertOneRequest) => Promise<Result<InsertOneResponse>>

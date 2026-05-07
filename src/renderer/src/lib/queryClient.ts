@@ -37,8 +37,13 @@ export const queryKeys = {
     projection: string,
     sort: string,
     skip: number,
-    limit: number
-  ) => ['find', connectionId, db, coll, { filter, projection, sort, skip, limit }] as const,
+    limit: number,
+    epoch: number
+  ) => ['find', connectionId, db, coll, { filter, projection, sort, skip, limit, epoch }] as const,
+  aggregate: (connectionId: string, db: string, coll: string, pipeline: string, epoch: number) =>
+    ['aggregate', connectionId, db, coll, { pipeline, epoch }] as const,
+  shell: (connectionId: string, db: string, coll: string, command: string, epoch: number) =>
+    ['shell', connectionId, db, coll, { command, epoch }] as const,
   count: (connectionId: string, db: string, coll: string, filter: string) =>
     ['count', connectionId, db, coll, { filter }] as const
 }

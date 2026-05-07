@@ -22,6 +22,11 @@ type Props = {
    * formatter rejects MongoDB shell syntax (ObjectId(...) etc.).
    */
   onFormat?: () => void
+  /**
+   * Reports the editor's natural content height (pre-clamp) on every
+   * change. Sister editors can use this to keep their heights in sync.
+   */
+  onContentHeightChange?: (px: number) => void
 }
 
 /**
@@ -42,11 +47,15 @@ export function QueryEditor({
   maxHeight = 140,
   actions,
   autoFocus,
-  onFormat
+  onFormat,
+  onContentHeightChange
 }: Props) {
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
   const submitRef = useRef(onSubmit)
   const formatRef = useRef(onFormat)
+  const minHeightRef = useRef(minHeight)
+  const maxHeightRef = useRef(maxHeight)
+  const onContentHeightChangeRef = useRef(onContentHeightChange)
   const [contentHeight, setContentHeight] = useState(minHeight)
   useEffect(() => {
     submitRef.current = onSubmit
@@ -54,6 +63,20 @@ export function QueryEditor({
   useEffect(() => {
     formatRef.current = onFormat
   }, [onFormat])
+  useEffect(() => {
+    onContentHeightChangeRef.current = onContentHeightChange
+  }, [onContentHeightChange])
+  // Re-clamp the visible height when the bounds change from outside —
+  // e.g. a sister editor pushed our `minHeight` up to keep both rows the
+  // same height.
+  useEffect(() => {
+    minHeightRef.current = minHeight
+    maxHeightRef.current = maxHeight
+    const editor = editorRef.current
+    if (!editor) return
+    const ch = editor.getContentHeight()
+    setContentHeight(Math.min(Math.max(ch, minHeight), maxHeight))
+  }, [minHeight, maxHeight])
 
   const handleMount: OnMount = (editor, m) => {
     editorRef.current = editor
@@ -75,8 +98,9 @@ export function QueryEditor({
 
     const sync = () => {
       const ch = editor.getContentHeight()
-      const next = Math.min(Math.max(ch, minHeight), maxHeight)
+      const next = Math.min(Math.max(ch, minHeightRef.current), maxHeightRef.current)
       setContentHeight(next)
+      onContentHeightChangeRef.current?.(ch)
     }
     editor.onDidContentSizeChange(sync)
     sync()

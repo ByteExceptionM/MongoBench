@@ -379,6 +379,19 @@ export type FindResponse = {
   tookMs: number
 }
 
+export type AggregateRequest = {
+  connectionId: string
+  db: string
+  coll: string
+  /** Canonical-EJSON string of the pipeline (an array of stage objects). */
+  pipeline: string
+}
+
+export type AggregateResponse = {
+  documents: DocumentEnvelope[]
+  tookMs: number
+}
+
 export type CountRequest = {
   connectionId: string
   db: string
