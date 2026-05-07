@@ -348,27 +348,35 @@ function LatencyBlock({ stats, series }: { stats: ServerStats; series: Series })
   ]
   return (
     <div className="grid gap-3">
-      {items.map(({ label, v, color, s }) => (
-        <div key={label} className="grid gap-1.5">
-          <div className="flex items-baseline justify-between">
-            <span className="text-xs uppercase tracking-wider text-muted-foreground">{label}</span>
-            <div className="flex items-baseline gap-3 font-mono">
-              <span className="num-display text-lg font-semibold text-foreground">
-                {formatMicros(v.avgMicros)}
+      {items.map(({ label, v, color, s }) => {
+        // Headline uses the latest interval's mean — the cumulative ratio
+        // `latencyMicros / ops` would converge to the long-run average
+        // and stop reflecting current traffic.
+        const recentMicros = s.length > 0 ? (s[s.length - 1]?.value ?? 0) : 0
+        return (
+          <div key={label} className="grid gap-1.5">
+            <div className="flex items-baseline justify-between">
+              <span className="text-xs uppercase tracking-wider text-muted-foreground">
+                {label}
               </span>
-              <span className="text-xs text-muted-foreground">{formatNumber(v.ops)} ops</span>
+              <div className="flex items-baseline gap-3 font-mono">
+                <span className="num-display text-lg font-semibold text-foreground">
+                  {formatMicros(recentMicros)}
+                </span>
+                <span className="text-xs text-muted-foreground">{formatNumber(v.ops)} ops</span>
+              </div>
             </div>
+            <Chart
+              points={s}
+              color={color}
+              height={70}
+              unit=" µs"
+              formatY={(val) => formatMicrosShort(val)}
+              yMin={0}
+            />
           </div>
-          <Chart
-            points={s}
-            color={color}
-            height={70}
-            unit=" µs"
-            formatY={(val) => formatMicrosShort(val)}
-            yMin={0}
-          />
-        </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
@@ -985,11 +993,6 @@ function derive(history: StatsSample[]): Series {
       empty.cacheFillPct.push({ ts: s.ts, value: 0 })
     }
     empty.residentMb.push({ ts: s.ts, value: s.data.mem.residentMb })
-    if (s.data.latencies) {
-      empty.latencyMicros.reads.push({ ts: s.ts, value: s.data.latencies.reads.avgMicros })
-      empty.latencyMicros.writes.push({ ts: s.ts, value: s.data.latencies.writes.avgMicros })
-      empty.latencyMicros.commands.push({ ts: s.ts, value: s.data.latencies.commands.avgMicros })
-    }
   }
 
   for (let i = 1; i < history.length; i++) {
@@ -1033,7 +1036,37 @@ function derive(history: StatsSample[]): Series {
       prev.data.network.bytesIn +
       (cur.data.network.bytesOut - prev.data.network.bytesOut)
     empty.bytesPerSec.push({ ts: cur.ts, value: Math.max(0, bytesDelta / dt) })
+
+    if (cur.data.latencies && prev.data.latencies) {
+      empty.latencyMicros.reads.push({
+        ts: cur.ts,
+        value: intervalLatency(prev.data.latencies.reads, cur.data.latencies.reads)
+      })
+      empty.latencyMicros.writes.push({
+        ts: cur.ts,
+        value: intervalLatency(prev.data.latencies.writes, cur.data.latencies.writes)
+      })
+      empty.latencyMicros.commands.push({
+        ts: cur.ts,
+        value: intervalLatency(prev.data.latencies.commands, cur.data.latencies.commands)
+      })
+    }
   }
 
   return empty
+}
+
+/**
+ * Per-interval mean op latency in microseconds. Diffs the cumulative
+ * (`latencyMicros`, `ops`) counters between two consecutive samples so
+ * the chart actually moves with recent traffic.
+ */
+function intervalLatency(
+  prev: { latencyMicros: number; ops: number },
+  cur: { latencyMicros: number; ops: number }
+): number {
+  const dOps = cur.ops - prev.ops
+  if (dOps <= 0) return 0
+  const dLatency = cur.latencyMicros - prev.latencyMicros
+  return dLatency / dOps
 }

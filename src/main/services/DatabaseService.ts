@@ -10,6 +10,14 @@ export class DatabaseService {
 
   async listDatabases(connectionId: string): Promise<DatabaseInfo[]> {
     const client = this.connections.getClient(connectionId)
+    const authOnly = await this.connections.isAuthorizedOnly(connectionId)
+    if (!authOnly) {
+      const result = (await client.db('admin').admin().listDatabases()) as {
+        databases: Array<{ name: string; sizeOnDisk?: number; empty?: boolean }>
+      }
+      return result.databases
+    }
+
     const [result, allowed] = await Promise.all([
       client.db('admin').admin().listDatabases({ authorizedDatabases: true }) as Promise<{
         databases: Array<{ name: string; sizeOnDisk?: number; empty?: boolean }>
@@ -22,9 +30,10 @@ export class DatabaseService {
 
   async listCollections(connectionId: string, db: string): Promise<CollectionInfo[]> {
     const client = this.connections.getClient(connectionId)
+    const authOnly = await this.connections.isAuthorizedOnly(connectionId)
     const cursor = client
       .db(db)
-      .listCollections({}, { nameOnly: true, authorizedCollections: true })
+      .listCollections({}, { nameOnly: true, authorizedCollections: authOnly })
     const items = await cursor.toArray()
     return items.map((info) => ({
       name: info.name as string,
@@ -118,9 +127,10 @@ export class DatabaseService {
   async serverStats(connectionId: string): Promise<ServerStats> {
     const client = this.connections.getClient(connectionId)
     const admin = client.db('admin')
+    const authOnly = await this.connections.isAuthorizedOnly(connectionId)
     const [status, dbs] = await Promise.all([
       admin.command({ serverStatus: 1 }) as Promise<Record<string, unknown>>,
-      admin.admin().listDatabases({ authorizedDatabases: true }) as Promise<{
+      admin.admin().listDatabases(authOnly ? { authorizedDatabases: true } : {}) as Promise<{
         databases: Array<{ name: string; sizeOnDisk?: number; empty?: boolean }>
         totalSize?: number
       }>
@@ -148,9 +158,9 @@ export class DatabaseService {
     const opLat = status['opLatencies'] as Record<string, unknown> | undefined
     const latencies = opLat
       ? {
-          reads: averageLatency(opLat['reads']),
-          writes: averageLatency(opLat['writes']),
-          commands: averageLatency(opLat['commands'])
+          reads: rawLatency(opLat['reads']),
+          writes: rawLatency(opLat['writes']),
+          commands: rawLatency(opLat['commands'])
         }
       : undefined
 
@@ -284,12 +294,19 @@ async function authorizedDatabases(client: MongoClient): Promise<Set<string> | '
   }
 }
 
-function averageLatency(node: unknown): { avgMicros: number; ops: number } {
-  if (typeof node !== 'object' || node === null) return { avgMicros: 0, ops: 0 }
+/**
+ * Pull the raw cumulative latency / ops counters out of the
+ * `opLatencies.{reads,writes,commands}` block. The renderer derives a
+ * *recent* per-op average by diffing consecutive samples — a cumulative
+ * ratio computed here would barely move once the server has been up.
+ */
+function rawLatency(node: unknown): { latencyMicros: number; ops: number } {
+  if (typeof node !== 'object' || node === null) return { latencyMicros: 0, ops: 0 }
   const r = node as Record<string, unknown>
-  const latency = numberOr(r['latency'], 0)
-  const ops = numberOr(r['ops'], 0)
-  return { avgMicros: ops > 0 ? latency / ops : 0, ops }
+  return {
+    latencyMicros: numberOr(r['latency'], 0),
+    ops: numberOr(r['ops'], 0)
+  }
 }
 
 function tickets(node: unknown): { available: number; out: number; total: number } {

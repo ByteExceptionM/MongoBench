@@ -94,6 +94,16 @@ export class ConnectionService {
     return client
   }
 
+  /**
+   * Per-connection toggle: when true, the explorer should only list
+   * databases / collections the authenticated user has privileges on.
+   * Reads from the in-memory repo cache, so it's effectively sync.
+   */
+  async isAuthorizedOnly(id: string): Promise<boolean> {
+    const stored = await this.repo.getStored(id)
+    return stored?.authorizedOnly === true
+  }
+
   private async materializeFromInput(input: ConnectionInput, existingId?: string): Promise<string> {
     const formPassword =
       input.password !== undefined && input.password.length > 0 ? input.password : undefined

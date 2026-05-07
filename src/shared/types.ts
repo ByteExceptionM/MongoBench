@@ -67,6 +67,13 @@ export type StoredConnection = {
   readPreference?: ReadPreference
   uuidEncoding?: UuidEncoding
   timezone?: string
+  /**
+   * When true, the explorer only lists databases and collections the
+   * authenticated user has *any* privilege on. Default (false) lists
+   * everything the server returns — admin / readAnyDatabase users see
+   * the full cluster.
+   */
+  authorizedOnly?: boolean
   maxPoolSize?: number
   minPoolSize?: number
   connectTimeoutMS?: number
@@ -94,6 +101,13 @@ export type ConnectionConfig = {
   readPreference?: ReadPreference
   uuidEncoding?: UuidEncoding
   timezone?: string
+  /**
+   * When true, the explorer only lists databases and collections the
+   * authenticated user has *any* privilege on. Default (false) lists
+   * everything the server returns — admin / readAnyDatabase users see
+   * the full cluster.
+   */
+  authorizedOnly?: boolean
   maxPoolSize?: number
   minPoolSize?: number
   connectTimeoutMS?: number
@@ -123,6 +137,13 @@ export type ConnectionInput = {
   readPreference?: ReadPreference
   uuidEncoding?: UuidEncoding
   timezone?: string
+  /**
+   * When true, the explorer only lists databases and collections the
+   * authenticated user has *any* privilege on. Default (false) lists
+   * everything the server returns — admin / readAnyDatabase users see
+   * the full cluster.
+   */
+  authorizedOnly?: boolean
   maxPoolSize?: number
   minPoolSize?: number
   connectTimeoutMS?: number
@@ -203,11 +224,16 @@ export type ServerStats = {
     pagesRead: number
     pagesRequested: number
   }
-  /** Average per-op latency in microseconds. */
+  /**
+   * Cumulative latency counters since server start (microseconds total + op
+   * count). The renderer takes deltas between consecutive samples to get
+   * the *recent* per-op average — using the cumulative ratio directly hides
+   * any short-term change because it converges to the long-run mean.
+   */
   latencies?: {
-    reads: { avgMicros: number; ops: number }
-    writes: { avgMicros: number; ops: number }
-    commands: { avgMicros: number; ops: number }
+    reads: { latencyMicros: number; ops: number }
+    writes: { latencyMicros: number; ops: number }
+    commands: { latencyMicros: number; ops: number }
   }
   /** Cumulative document-level counters since startup. */
   documents: {
