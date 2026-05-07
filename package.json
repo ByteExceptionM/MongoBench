@@ -2,7 +2,7 @@
   "name": "mongobench",
   "version": "1.0.0",
   "private": true,
-  "description": "A modern, dark-mode-first MongoDB GUI for Windows.",
+  "description": "A modern, dark-mode-first MongoDB GUI.",
   "author": "ByteExceptionM",
   "license": "MIT",
   "repository": {

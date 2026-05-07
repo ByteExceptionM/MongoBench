@@ -1,6 +1,6 @@
 # MongoBench
 
-A modern, dark-mode-first MongoDB GUI for Windows. Built as a daily-driver alternative to MongoDB Compass.
+A modern, dark-mode-first MongoDB GUI. Built as a daily-driver alternative to MongoDB Compass.
 
 > Status: early development
 
@@ -11,12 +11,6 @@ A modern, dark-mode-first MongoDB GUI for Windows. Built as a daily-driver alter
 - React 18, Zustand, TanStack Query
 - Tailwind CSS + shadcn/ui
 - Official `mongodb` Node.js driver, `bson` for EJSON (added in M1)
-- electron-builder for Windows distribution (NSIS / MSI / portable)
-
-## Requirements
-
-- Node.js 20+
-- Windows 10/11 (the v1 target; the codebase stays portable for later cross-platform builds)
 
 ## Scripts
 
