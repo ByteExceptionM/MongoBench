@@ -49,6 +49,7 @@ type FormState = {
   readPreference: ReadPreference | 'default'
   uuidEncoding: UuidEncoding
   timezone: string
+  authorizedOnly: boolean
   maxPoolSize: string
   minPoolSize: string
   connectTimeoutMS: string
@@ -72,6 +73,7 @@ const emptyForm = (): FormState => ({
   readPreference: 'default',
   uuidEncoding: 'default',
   timezone: 'UTC',
+  authorizedOnly: false,
   maxPoolSize: '',
   minPoolSize: '',
   connectTimeoutMS: '',
@@ -95,6 +97,7 @@ const fromConnection = (conn: ConnectionConfig): FormState => ({
   readPreference: conn.readPreference ?? 'default',
   uuidEncoding: conn.uuidEncoding ?? 'default',
   timezone: conn.timezone ?? 'UTC',
+  authorizedOnly: conn.authorizedOnly ?? false,
   maxPoolSize: conn.maxPoolSize !== undefined ? String(conn.maxPoolSize) : '',
   minPoolSize: conn.minPoolSize !== undefined ? String(conn.minPoolSize) : '',
   connectTimeoutMS: conn.connectTimeoutMS !== undefined ? String(conn.connectTimeoutMS) : '',
@@ -129,6 +132,7 @@ function buildInput(form: FormState): ConnectionInput {
   if (form.timezone.trim().length > 0 && form.timezone.trim() !== 'UTC') {
     input.timezone = form.timezone.trim()
   }
+  if (form.authorizedOnly) input.authorizedOnly = true
   const maxPool = parseInt(form.maxPoolSize)
   if (maxPool !== undefined) input.maxPoolSize = maxPool
   const minPool = parseInt(form.minPoolSize)
@@ -461,6 +465,13 @@ export function ConnectionFormDialog({ open, onOpenChange, connection }: Props) 
                     onChange={(v) => update('timezone', v)}
                   />
                 </Field>
+                <ToggleRow
+                  id="conn-auth-only"
+                  label="Hide databases without permissions"
+                  hint="Only list databases and collections the authenticated user has any privilege on. Off shows everything the server returns."
+                  checked={form.authorizedOnly}
+                  onCheckedChange={(v) => update('authorizedOnly', v)}
+                />
                 <div className="grid grid-cols-2 gap-3">
                   <Field label="Retry writes" htmlFor="conn-rwrites">
                     <Select

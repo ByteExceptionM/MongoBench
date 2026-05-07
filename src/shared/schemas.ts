@@ -34,6 +34,7 @@ export const ConnectionInputSchema = z
     readPreference: ReadPreferenceSchema.optional(),
     uuidEncoding: UuidEncodingSchema.optional(),
     timezone: z.string().trim().min(1).max(120).optional(),
+    authorizedOnly: z.boolean().optional(),
     maxPoolSize: z.number().int().min(1).max(10_000).optional(),
     minPoolSize: z.number().int().min(0).max(10_000).optional(),
     connectTimeoutMS: z.number().int().min(500).max(120_000).optional(),
