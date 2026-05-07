@@ -23,11 +23,6 @@ pkgver() {
         "$(git rev-parse --short HEAD)"
 }
 
-prepare() {
-    cd "$srcdir/MongoBench"
-    git checkout feature-x
-}
-
 build() {
     cd "$srcdir/MongoBench"
     npm ci
