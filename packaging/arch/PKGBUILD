@@ -12,8 +12,14 @@ provides=("$_appname")
 conflicts=("$_appname")
 # uncomment when git repo is public
 #source=("git+https://github.com/ByteExceptionM/MongoBench.git")
-source=("git+ssh://git@github.com/ByteExceptionM/MongoBench.git")
-sha256sums=('SKIP')
+source=(
+  "git+ssh://git@github.com/ByteExceptionM/MongoBench.git"
+  "0001-fix-display-correct-icon-under-wayland-kde.patch"
+)
+sha256sums=(
+  'SKIP'
+  'SKIP'
+)
 
 pkgver() {
     cd "$srcdir/MongoBench"
@@ -23,6 +29,12 @@ pkgver() {
         "$(git rev-parse --short HEAD)"
 }
 
+prepare() {
+    cd "$srcdir/MongoBench"
+    for p in "$srcdir"/*.patch; do
+        patch -Np1 -i "$p"
+    done
+}
 build() {
     cd "$srcdir/MongoBench"
     npm ci
