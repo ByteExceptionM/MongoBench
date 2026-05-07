@@ -181,6 +181,15 @@ export const CountRequestSchema = z
   })
   .strict()
 
+export const AggregateRequestSchema = z
+  .object({
+    connectionId: z.string().uuid(),
+    db: dbName,
+    coll: collName,
+    pipeline: z.string().max(256 * 1024)
+  })
+  .strict()
+
 const idString = z
   .string()
   .min(1)

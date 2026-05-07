@@ -2,6 +2,8 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type { Api } from '@shared/api'
 import type { Result } from '@shared/result'
 import type {
+  AggregateRequest,
+  AggregateResponse,
   CollectionInfo,
   CollectionStats,
   ConnectionConfig,
@@ -70,6 +72,7 @@ const api: Api = {
   },
   query: {
     find: (request: FindRequest) => invoke<FindResponse>('query:find', request),
+    aggregate: (request: AggregateRequest) => invoke<AggregateResponse>('query:aggregate', request),
     count: (request: CountRequest) => invoke<CountResponse>('query:count', request),
     replaceOne: (request: ReplaceOneRequest) =>
       invoke<ReplaceOneResponse>('query:replaceOne', request),

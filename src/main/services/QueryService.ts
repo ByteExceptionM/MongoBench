@@ -1,6 +1,8 @@
 import type { Document, Filter, Sort } from 'mongodb'
 import { EJSON } from 'bson'
 import type {
+  AggregateRequest,
+  AggregateResponse,
   DeleteManyRequest,
   DeleteManyResponse,
   DeleteOneRequest,
@@ -40,6 +42,19 @@ export class QueryService {
     const documents: DocumentEnvelope[] = docs.map(toEnvelope)
 
     return { documents, tookMs }
+  }
+
+  async aggregate(req: AggregateRequest): Promise<AggregateResponse> {
+    const client = this.connections.getClient(req.connectionId)
+    const coll = client.db(req.db).collection(req.coll)
+
+    const pipeline = parsePipeline(req.pipeline)
+
+    const startedAt = Date.now()
+    const docs = await coll.aggregate(pipeline).toArray()
+    const tookMs = Date.now() - startedAt
+
+    return { documents: docs.map(toEnvelope), tookMs }
   }
 
   async count(req: {
@@ -154,4 +169,21 @@ function parseDocument(canonical: string): Document {
     throw e
   }
   return parsed as Document
+}
+
+function parsePipeline(canonical: string): Document[] {
+  const parsed = EJSON.parse(canonical, { relaxed: false })
+  if (!Array.isArray(parsed)) {
+    const e = new Error('Pipeline must be an array of stage objects')
+    e.name = 'ValidationError'
+    throw e
+  }
+  for (const stage of parsed) {
+    if (typeof stage !== 'object' || stage === null || Array.isArray(stage)) {
+      const e = new Error('Each pipeline stage must be an object')
+      e.name = 'ValidationError'
+      throw e
+    }
+  }
+  return parsed as Document[]
 }

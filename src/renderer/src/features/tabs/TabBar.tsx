@@ -52,14 +52,15 @@ function TabPill({
         }
       }}
       className={cn(
-        'group flex shrink-0 cursor-pointer items-center gap-2 border-r px-3 text-xs',
+        'group relative flex shrink-0 cursor-pointer items-center gap-2 border-r px-3 text-xs',
         active
-          ? 'border-b-0 bg-background text-foreground'
+          ? 'border-b-0 bg-background font-medium text-foreground'
           : 'text-muted-foreground hover:bg-accent/40 hover:text-foreground'
       )}
     >
+      {active && <span className="absolute inset-x-0 top-0 h-[2px] bg-primary" />}
       <span className="font-mono">
-        <span className="text-muted-foreground">{tab.db}.</span>
+        <span className={active ? 'text-primary/70' : 'text-muted-foreground'}>{tab.db}.</span>
         <span>{tab.coll}</span>
       </span>
       <button

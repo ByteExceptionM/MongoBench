@@ -1,5 +1,7 @@
 import type { ApiErrorPayload, ErrorCode, Result } from '@shared/result'
 import type {
+  AggregateRequest,
+  AggregateResponse,
   CollectionInfo,
   CollectionStats,
   ConnectionConfig,
@@ -92,6 +94,8 @@ export const api = {
   },
   query: {
     find: (request: FindRequest): Promise<FindResponse> => unwrap(window.api.query.find(request)),
+    aggregate: (request: AggregateRequest): Promise<AggregateResponse> =>
+      unwrap(window.api.query.aggregate(request)),
     count: (request: CountRequest): Promise<CountResponse> =>
       unwrap(window.api.query.count(request)),
     replaceOne: (request: ReplaceOneRequest): Promise<ReplaceOneResponse> =>

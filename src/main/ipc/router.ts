@@ -2,6 +2,7 @@ import { ipcMain, type IpcMainInvokeEvent } from 'electron'
 import log from 'electron-log/main'
 import type { ZodType } from 'zod'
 import {
+  AggregateRequestSchema,
   CollectionRefSchema,
   ConnectionIdSchema,
   ConnectionInputSchema,
@@ -189,6 +190,11 @@ export function registerIpcHandlers(services: Services): void {
   ipcMain.handle(
     Channels.QueryFind,
     withResult(FindRequestSchema, (request) => queries.find(request))
+  )
+
+  ipcMain.handle(
+    Channels.QueryAggregate,
+    withResult(AggregateRequestSchema, (request) => queries.aggregate(request))
   )
 
   ipcMain.handle(

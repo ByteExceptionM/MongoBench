@@ -1,22 +1,39 @@
 import { create } from 'zustand'
 
+export type QueryMode = 'simple' | 'aggregation' | 'shell'
+
 export type CollectionTab = {
   id: string
   connectionId: string
   db: string
   coll: string
+  /** Which input surface is active for this tab. */
+  mode: QueryMode
   filter: string
   /** EJSON object string. Empty = no projection. */
   projection: string
   /** EJSON object string. Empty = no explicit sort. */
   sort: string
+  /** Aggregation pipeline source (mongosh-flavoured array, e.g. `[{ $match: ... }]`). */
+  pipeline: string
+  /** Shell command source (e.g. `db.coll.find({...}).limit(10)`). */
+  shell: string
   skip: number
   /** 0 = no limit (return all matching documents). */
   limit: number
+  /**
+   * Bumped on every explicit Run. Part of the active query's queryKey so
+   * pressing Run with unchanged params still refetches, while a tab
+   * re-mount (switching back to this tab) does not.
+   */
+  runEpoch: number
 }
 
 export type QueryPatch = Partial<
-  Pick<CollectionTab, 'filter' | 'projection' | 'sort' | 'skip' | 'limit'>
+  Pick<
+    CollectionTab,
+    'mode' | 'filter' | 'projection' | 'sort' | 'pipeline' | 'shell' | 'skip' | 'limit' | 'runEpoch'
+  >
 >
 
 const DEFAULT_LIMIT = 100
@@ -64,11 +81,15 @@ export const useTabsStore = create<TabsState>((set) => ({
         connectionId,
         db,
         coll,
+        mode: 'simple',
         filter: filter ?? '',
         projection: '',
         sort: '',
+        pipeline: '',
+        shell: '',
         skip: 0,
-        limit: DEFAULT_LIMIT
+        limit: DEFAULT_LIMIT,
+        runEpoch: 0
       }
       return { tabs: [...state.tabs, tab], activeTabId: id }
     }),
