@@ -1,6 +1,6 @@
 pkgname=mongobench-git
 _appname=mongobench
-pkgver=0.1.0
+pkgver=.r22.ged97c89
 pkgrel=1
 pkgdesc="A modern, dark-mode-first MongoDB GUI"
 arch=('x86_64')
@@ -10,10 +10,8 @@ depends=('electron')
 makedepends=('npm')
 provides=("$_appname")
 conflicts=("$_appname")
-# uncomment when git repo is public
-#source=("git+https://github.com/ByteExceptionM/MongoBench.git")
 source=(
-  "git+ssh://git@github.com/ByteExceptionM/MongoBench.git"
+  "git+https://github.com/ByteExceptionM/MongoBench.git"
   "0001-fix-display-correct-icon-under-wayland-kde.patch"
 )
 sha256sums=(
@@ -35,6 +33,7 @@ prepare() {
         patch -Np1 -i "$p"
     done
 }
+
 build() {
     cd "$srcdir/MongoBench"
     npm ci
