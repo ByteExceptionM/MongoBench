@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
@@ -13,6 +13,7 @@ import {
   Trash2
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { useExplorerStore } from '@/store/explorer'
 import { useTabsStore } from '@/store/tabs'
 import { api, ApiError } from '@/lib/api'
 import { queryKeys } from '@/lib/queryClient'
@@ -59,6 +60,20 @@ export function CollectionLeaf({
   const isActive = activeTabId === tabId
   const [dialog, setDialog] = useState<DialogState>(null)
   const queryClient = useQueryClient()
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  const revealTarget = useExplorerStore((s) => s.revealTarget)
+  const revealNonce = useExplorerStore((s) => s.revealNonce)
+
+  useEffect(() => {
+    if (
+      revealTarget &&
+      revealTarget.connectionId === connectionId &&
+      revealTarget.db === db &&
+      revealTarget.coll === name
+    ) {
+      buttonRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    }
+  }, [revealNonce, revealTarget, connectionId, db, name])
 
   const connectionsQuery = useQuery({
     queryKey: queryKeys.connections,
@@ -99,6 +114,7 @@ export function CollectionLeaf({
       <ContextMenu>
         <ContextMenuTrigger asChild>
           <button
+            ref={buttonRef}
             type="button"
             onClick={() => open({ connectionId, db, coll: name })}
             className={cn(

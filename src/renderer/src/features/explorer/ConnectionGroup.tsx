@@ -15,6 +15,7 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAppStore } from '@/store'
+import { useExplorerStore } from '@/store/explorer'
 import { useTabsStore } from '@/store/tabs'
 import { api, ApiError } from '@/lib/api'
 import { queryKeys } from '@/lib/queryClient'
@@ -57,17 +58,22 @@ export function ConnectionGroup({
   const markConnected = useAppStore((s) => s.markConnected)
   const markDisconnected = useAppStore((s) => s.markDisconnected)
   const closeTabsForConnection = useTabsStore((s) => s.closeForConnection)
+  const expanded = useExplorerStore((s) => s.expandedConnections.has(connection.id))
+  const expandConnection = useExplorerStore((s) => s.expandConnection)
+  const collapseConnection = useExplorerStore((s) => s.collapseConnection)
+  const toggleConnection = useExplorerStore((s) => s.toggleConnection)
   const queryClient = useQueryClient()
 
-  const [expanded, setExpanded] = useState(isActive)
   const [createDbOpen, setCreateDbOpen] = useState(false)
-  const wasActive = useRef(isActive)
+  // Start as `false` so the first effect run expands the row when the
+  // component mounts already-connected (e.g. after app reload).
+  const wasActive = useRef(false)
 
   useEffect(() => {
-    if (isActive && !wasActive.current) setExpanded(true)
-    else if (!isActive && wasActive.current) setExpanded(false)
+    if (isActive && !wasActive.current) expandConnection(connection.id)
+    else if (!isActive && wasActive.current) collapseConnection(connection.id)
     wasActive.current = isActive
-  }, [isActive])
+  }, [isActive, connection.id, expandConnection, collapseConnection])
 
   const connectMutation = useMutation({
     mutationFn: () => api.connections.connect(connection.id),
@@ -99,7 +105,7 @@ export function ConnectionGroup({
       connectMutation.mutate()
       return
     }
-    if (canExpand) setExpanded((v) => !v)
+    if (canExpand) toggleConnection(connection.id)
   }
 
   const refresh = () => {
