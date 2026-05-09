@@ -13,6 +13,7 @@ import {
 import { api } from '@/lib/api'
 import { queryKeys } from '@/lib/queryClient'
 import { useAppStore } from '@/store'
+import { useExplorerStore } from '@/store/explorer'
 import { useTabsStore } from '@/store/tabs'
 import type { CollectionInfo, ConnectionConfig, DatabaseInfo } from '@shared/types'
 
@@ -60,6 +61,7 @@ export function CommandPalette({ open, onOpenChange }: Props) {
   const markDisconnected = useAppStore((s) => s.markDisconnected)
   const closeForConnection = useTabsStore((s) => s.closeForConnection)
   const openTab = useTabsStore((s) => s.open)
+  const revealInExplorer = useExplorerStore((s) => s.reveal)
 
   const { data: connections } = useQuery({
     queryKey: queryKeys.connections,
@@ -231,6 +233,11 @@ export function CommandPalette({ open, onOpenChange }: Props) {
                     item={item}
                     showConnection={activeConnections.length > 1}
                     onSelect={() => {
+                      revealInExplorer({
+                        connectionId: item.connectionId,
+                        db: item.db,
+                        coll: item.coll
+                      })
                       openTab({
                         connectionId: item.connectionId,
                         db: item.db,

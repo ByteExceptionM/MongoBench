@@ -13,6 +13,7 @@ import {
 } from 'lucide-react'
 import { api, ApiError } from '@/lib/api'
 import { queryKeys } from '@/lib/queryClient'
+import { useExplorerStore } from '@/store/explorer'
 import { useTabsStore } from '@/store/tabs'
 import { Button } from '@/components/ui/button'
 import {
@@ -72,7 +73,8 @@ export function DatabaseGroup({ connectionId }: { connectionId: string }) {
 type DialogState = 'create-coll' | 'users' | 'drop' | null
 
 function DatabaseRow({ connectionId, db }: { connectionId: string; db: DatabaseInfo }) {
-  const [expanded, setExpanded] = useState(false)
+  const expanded = useExplorerStore((s) => s.expandedDatabases.has(`${connectionId}::${db.name}`))
+  const toggleDatabase = useExplorerStore((s) => s.toggleDatabase)
   const [dialog, setDialog] = useState<DialogState>(null)
   const queryClient = useQueryClient()
   const closeForDatabase = useTabsStore((s) => s.closeForDatabase)
@@ -113,7 +115,7 @@ function DatabaseRow({ connectionId, db }: { connectionId: string; db: DatabaseI
         <ContextMenuTrigger asChild>
           <button
             type="button"
-            onClick={() => setExpanded((v) => !v)}
+            onClick={() => toggleDatabase(connectionId, db.name)}
             className="group flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs transition-colors hover:bg-accent/60 data-[state=open]:bg-accent/60"
           >
             <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center text-muted-foreground">
