@@ -4,7 +4,7 @@
 
 A modern, dark-mode-first MongoDB GUI. Built as a daily-driver alternative to MongoDB Compass, focused on speed, density, and a polished editing experience.
 
-[![Latest release](https://img.shields.io/github/v/release/ByteExceptionM/MongoBench?style=flat-square&color=21DCEF)](https://github.com/ByteExceptionM/MongoBench/releases/latest)
+[![Latest release](https://img.shields.io/github/v/release/ByteExceptionM/MongoBench?color=21DCEF&style=flat-square)](https://github.com/ByteExceptionM/MongoBench/releases/latest)
 [![License](https://img.shields.io/badge/license-MIT-1F232C?style=flat-square)](LICENSE)
 [![CI](https://img.shields.io/github/actions/workflow/status/ByteExceptionM/MongoBench/ci.yml?branch=main&style=flat-square)](https://github.com/ByteExceptionM/MongoBench/actions)
 
