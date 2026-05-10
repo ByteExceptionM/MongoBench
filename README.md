@@ -197,7 +197,7 @@ Per-connection live view, sampled every 5 s, sliding 5-min history:
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Windows (x64)** | `MongoBench-Setup-<version>-x64.exe` from [Releases](https://github.com/ByteExceptionM/MongoBench/releases/latest) — NSIS installer, per-user, no admin |
 | **Linux (x64)**   | `MongoBench-<version>-x86_64.AppImage` — `chmod +x` and run                                                                                             |
-| **Arch / AUR**    | PKGBUILD shipped under `packaging/arch/`  or via AUR: paru -S mongobench-git / yay -S mongobench-git                                                    |
+| **Arch / AUR**    | PKGBUILD shipped under `packaging/arch/` or via AUR: paru -S mongobench-git / yay -S mongobench-git                                                     |
 
 Builds are **unsigned**. On first launch on Windows you'll see SmartScreen — click "More info → Run anyway".
 
