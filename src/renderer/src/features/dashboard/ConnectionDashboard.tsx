@@ -5,7 +5,9 @@ import {
   ArrowDownToLine,
   ArrowUpFromLine,
   Boxes,
+  Clock,
   Cpu,
+  Database,
   FileEdit,
   FileMinus2,
   FilePlus2,
@@ -13,6 +15,7 @@ import {
   Gauge,
   HardDrive,
   Heart,
+  Info,
   Layers,
   Loader2,
   MousePointer,
@@ -37,12 +40,14 @@ import type { ConnectionConfig, ServerStats } from '@shared/types'
 type Series = {
   /** Total ops/sec across all opcounters. */
   opsPerSec: ChartPoint[]
-  /** Ops/sec broken out per opcounter family. */
+  /** Ops/sec broken out per opcounter family (all six). */
   opsPerSecByKind: {
     query: ChartPoint[]
     insert: ChartPoint[]
     update: ChartPoint[]
     delete: ChartPoint[]
+    getmore: ChartPoint[]
+    command: ChartPoint[]
   }
   /** Active connections over time. */
   connections: ChartPoint[]
@@ -208,11 +213,20 @@ function Overview({ stats, series }: { stats: ServerStats; series: Series }) {
   const lastOpsPerSec = series.opsPerSec.at(-1)?.value ?? 0
   return (
     <div className="grid grid-cols-12 gap-4">
-      <Card className="col-span-12 lg:col-span-7" title="Storage by database" icon={<HardDrive />}>
+      <KpiStrip stats={stats} series={series} />
+
+      <Card className="col-span-12 lg:col-span-8" title="Storage by database" icon={<HardDrive />}>
         <DatabasesPie databases={stats.databases} />
       </Card>
-      <Card className="col-span-12 lg:col-span-5" title="Operation latency" icon={<Timer />}>
+      <Card className="col-span-12 lg:col-span-4" title="Server" icon={<Info />}>
+        <ServerInfoBlock stats={stats} />
+      </Card>
+
+      <Card className="col-span-12 lg:col-span-7" title="Operation latency" icon={<Timer />}>
         <LatencyBlock stats={stats} series={series} />
+      </Card>
+      <Card className="col-span-12 lg:col-span-5" title="Workload mix" icon={<Layers />}>
+        <WorkloadMixBlock series={series} />
       </Card>
 
       <Card
@@ -232,6 +246,214 @@ function Overview({ stats, series }: { stats: ServerStats; series: Series }) {
       <Card className="col-span-12" title="Network" icon={<Network />}>
         <NetworkBlock stats={stats} series={series} />
       </Card>
+    </div>
+  )
+}
+
+/* ---------- Compact KPI strip ---------- */
+
+function KpiStrip({ stats, series }: { stats: ServerStats; series: Series }) {
+  const opsPs = series.opsPerSec.at(-1)?.value ?? 0
+  const netPs = series.bytesPerSec.at(-1)?.value ?? 0
+  const conn = stats.connections
+  const connTotal = conn.current + conn.available
+  const connPct = connTotal > 0 ? (conn.current / connTotal) * 100 : 0
+  const hitRate =
+    stats.cache && stats.cache.pagesRequested > 0
+      ? (1 - stats.cache.pagesRead / stats.cache.pagesRequested) * 100
+      : null
+  const cachePct =
+    stats.cache && stats.cache.maxBytesConfigured > 0
+      ? (stats.cache.bytesInCache / stats.cache.maxBytesConfigured) * 100
+      : null
+  const totalDocs =
+    stats.documents.inserted +
+    stats.documents.returned +
+    stats.documents.updated +
+    stats.documents.deleted
+
+  const tiles: Array<{
+    label: string
+    icon: React.ReactNode
+    value: string
+    detail: string
+    series?: ChartPoint[]
+    color?: string
+  }> = [
+    {
+      label: 'ops / sec',
+      icon: <Gauge />,
+      value: opsPs < 10 ? opsPs.toFixed(1) : opsPs.toFixed(0),
+      detail: `${formatNumber(stats.network.numRequests)} cumulative`,
+      series: series.opsPerSec,
+      color: 'hsl(var(--primary))'
+    },
+    {
+      label: 'net / sec',
+      icon: <Network />,
+      value: formatBytesShort(netPs),
+      detail: `${formatBytes(stats.network.bytesIn + stats.network.bytesOut)} total`,
+      series: series.bytesPerSec,
+      color: 'hsl(var(--success))'
+    },
+    {
+      label: 'connections',
+      icon: <Plug />,
+      value: formatNumber(conn.current),
+      detail: `${connPct.toFixed(0)}% of ${formatNumber(connTotal)}`,
+      series: series.connections,
+      color: '#fb923c'
+    },
+    {
+      label: 'cache hit',
+      icon: <Boxes />,
+      value: hitRate !== null ? `${hitRate.toFixed(2)}%` : '—',
+      detail: cachePct !== null ? `fill ${cachePct.toFixed(0)}%` : 'no cache stats',
+      series: series.cacheFillPct,
+      color: '#a78bfa'
+    },
+    {
+      label: 'resident',
+      icon: <Cpu />,
+      value: `${formatNumber(stats.mem.residentMb)} MB`,
+      detail: `${formatNumber(stats.mem.virtualMb)} MB virtual`,
+      series: series.residentMb,
+      color: '#f472b6'
+    },
+    {
+      label: 'documents',
+      icon: <Files />,
+      value: formatCompact(totalDocs),
+      detail: `${formatCompact(stats.documents.returned)} read · ${formatCompact(
+        stats.documents.inserted + stats.documents.updated + stats.documents.deleted
+      )} written`,
+      color: '#facc15'
+    },
+    {
+      label: 'storage',
+      icon: <HardDrive />,
+      value: formatBytes(stats.totalSizeOnDisk),
+      detail: `${stats.databases.length} dbs`,
+      color: '#60a5fa'
+    },
+    {
+      label: 'uptime',
+      icon: <Clock />,
+      value: formatUptime(stats.uptimeSeconds),
+      detail: `MongoDB ${stats.version}`,
+      color: '#34d399'
+    }
+  ]
+
+  return (
+    <div className="col-span-12 grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-8">
+      {tiles.map((t) => (
+        <div key={t.label} className="rounded-lg border bg-card px-3 py-2.5">
+          <div className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+            <span className="[&_svg]:size-3" style={t.color ? { color: t.color } : undefined}>
+              {t.icon}
+            </span>
+            {t.label}
+          </div>
+          <div className="num-display mt-1 font-mono text-xl font-semibold leading-tight">
+            {t.value}
+          </div>
+          <div className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground">
+            {t.detail}
+          </div>
+          {t.series && t.series.length > 1 && (
+            <Sparkline
+              values={t.series.map((p) => p.value)}
+              color={t.color ?? 'hsl(var(--primary))'}
+              height={18}
+              fillOpacity={0.18}
+            />
+          )}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function ServerInfoBlock({ stats }: { stats: ServerStats }) {
+  const totalSize = stats.totalSizeOnDisk
+  const emptyDbs = stats.databases.filter((d) => d.empty).length
+  const biggest =
+    stats.databases.length > 0
+      ? [...stats.databases].sort((a, b) => b.sizeOnDisk - a.sizeOnDisk)[0]
+      : null
+  const rows: Array<[string, string]> = [
+    ['Host', stats.host],
+    ['Version', `MongoDB ${stats.version}`],
+    ['Process', stats.process],
+    ['Storage engine', stats.storageEngine ?? '—'],
+    ['Uptime', formatUptime(stats.uptimeSeconds)],
+    ['Databases', `${stats.databases.length}${emptyDbs > 0 ? ` (${emptyDbs} empty)` : ''}`],
+    ['Total storage', formatBytes(totalSize)],
+    ['Largest database', biggest ? `${biggest.name} · ${formatBytes(biggest.sizeOnDisk)}` : '—']
+  ]
+  return (
+    <ul className="grid gap-1.5 text-xs">
+      {rows.map(([k, v]) => (
+        <li key={k} className="flex items-baseline justify-between gap-3">
+          <span className="text-muted-foreground">{k}</span>
+          <span className="truncate font-mono">{v}</span>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+function WorkloadMixBlock({ series }: { series: Series }) {
+  const samples = [
+    ['query', series.opsPerSecByKind.query.at(-1)?.value ?? 0, 'hsl(var(--primary))'],
+    ['insert', series.opsPerSecByKind.insert.at(-1)?.value ?? 0, 'hsl(var(--success))'],
+    ['update', series.opsPerSecByKind.update.at(-1)?.value ?? 0, '#fb923c'],
+    ['delete', series.opsPerSecByKind.delete.at(-1)?.value ?? 0, '#f472b6'],
+    ['getmore', series.opsPerSecByKind.getmore.at(-1)?.value ?? 0, '#60a5fa'],
+    ['command', series.opsPerSecByKind.command.at(-1)?.value ?? 0, '#a78bfa']
+  ] as const
+  const total = samples.reduce((s, [, v]) => s + v, 0)
+  return (
+    <div className="grid gap-3">
+      <div className="flex items-baseline justify-between">
+        <span className="text-xs uppercase tracking-wider text-muted-foreground">Last sample</span>
+        <span className="num-display font-mono text-base font-semibold">
+          {total.toFixed(total < 10 ? 1 : 0)}{' '}
+          <span className="text-xs font-normal text-muted-foreground">ops/s</span>
+        </span>
+      </div>
+      <div className="flex h-3 overflow-hidden rounded-full bg-muted">
+        {samples.map(([label, v, color]) => {
+          const pct = total > 0 ? (v / total) * 100 : 0
+          if (pct === 0) return null
+          return (
+            <div
+              key={label}
+              style={{ width: `${pct}%`, backgroundColor: color }}
+              title={`${label} — ${pct.toFixed(1)}%`}
+            />
+          )
+        })}
+      </div>
+      <ul className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+        {samples.map(([label, v, color]) => {
+          const pct = total > 0 ? (v / total) * 100 : 0
+          return (
+            <li key={label} className="flex items-center gap-2">
+              <span
+                className="inline-block h-2 w-2 shrink-0 rounded-sm"
+                style={{ backgroundColor: color }}
+              />
+              <span className="flex-1 truncate text-muted-foreground">{label}</span>
+              <span className="num-display font-mono">{v.toFixed(v < 10 ? 1 : 0)}</span>
+              <span className="num-display w-10 text-right font-mono text-muted-foreground">
+                {pct.toFixed(0)}%
+              </span>
+            </li>
+          )
+        })}
+      </ul>
     </div>
   )
 }
@@ -287,6 +509,117 @@ function Health({ stats, series }: { stats: ServerStats; series: Series }) {
       <Card className="col-span-12 lg:col-span-3" title="Asserts" icon={<AlertTriangle />}>
         <AssertsBlock stats={stats} totalAsserts={totalAsserts} />
       </Card>
+      <Card className="col-span-12 lg:col-span-7" title="Database breakdown" icon={<Database />}>
+        <DatabaseBreakdownBlock stats={stats} />
+      </Card>
+      <Card className="col-span-12 lg:col-span-5" title="Operation counters" icon={<Gauge />}>
+        <OperationCountersBlock stats={stats} />
+      </Card>
+    </div>
+  )
+}
+
+function DatabaseBreakdownBlock({ stats }: { stats: ServerStats }) {
+  const sorted = [...stats.databases].sort((a, b) => b.sizeOnDisk - a.sizeOnDisk)
+  const total = stats.totalSizeOnDisk
+  const nonEmpty = stats.databases.filter((d) => !d.empty).length
+  const avgSize = nonEmpty > 0 ? total / nonEmpty : 0
+  return (
+    <div className="grid gap-3">
+      <div className="grid grid-cols-3 gap-3 border-b pb-3">
+        <div>
+          <div className="text-xs uppercase tracking-wider text-muted-foreground">Databases</div>
+          <div className="num-display font-mono text-2xl font-semibold">
+            {formatNumber(stats.databases.length)}
+          </div>
+          <div className="text-[10px] text-muted-foreground">
+            {stats.databases.filter((d) => d.empty).length} empty
+          </div>
+        </div>
+        <div>
+          <div className="text-xs uppercase tracking-wider text-muted-foreground">Total size</div>
+          <div className="num-display font-mono text-2xl font-semibold">{formatBytes(total)}</div>
+          <div className="text-[10px] text-muted-foreground">avg {formatBytes(avgSize)}</div>
+        </div>
+        <div>
+          <div className="text-xs uppercase tracking-wider text-muted-foreground">Largest</div>
+          <div className="num-display font-mono text-2xl font-semibold">
+            {sorted[0] ? formatBytes(sorted[0].sizeOnDisk) : '—'}
+          </div>
+          <div className="truncate text-[10px] text-muted-foreground">{sorted[0]?.name ?? '—'}</div>
+        </div>
+      </div>
+      <ul className="grid max-h-64 gap-1 overflow-y-auto pr-1 text-xs">
+        {sorted.map((d) => {
+          const pct = total > 0 ? (d.sizeOnDisk / total) * 100 : 0
+          return (
+            <li key={d.name} className="flex items-center gap-3">
+              <span className="min-w-0 flex-1 truncate font-mono">{d.name}</span>
+              <div className="h-1.5 w-32 overflow-hidden rounded-full bg-muted">
+                <div
+                  className="h-full bg-primary"
+                  style={{ width: `${Math.min(100, Math.max(0, pct))}%` }}
+                />
+              </div>
+              <span className="num-display w-20 text-right font-mono text-muted-foreground">
+                {formatBytes(d.sizeOnDisk)}
+              </span>
+              <span className="num-display w-12 text-right font-mono text-muted-foreground">
+                {pct.toFixed(1)}%
+              </span>
+            </li>
+          )
+        })}
+      </ul>
+    </div>
+  )
+}
+
+function OperationCountersBlock({ stats }: { stats: ServerStats }) {
+  const rows: Array<[string, number, string]> = [
+    ['query', stats.opcounters.query, 'hsl(var(--primary))'],
+    ['insert', stats.opcounters.insert, 'hsl(var(--success))'],
+    ['update', stats.opcounters.update, '#fb923c'],
+    ['delete', stats.opcounters.delete, '#f472b6'],
+    ['getmore', stats.opcounters.getmore, '#60a5fa'],
+    ['command', stats.opcounters.command, '#a78bfa']
+  ]
+  const total = rows.reduce((s, [, v]) => s + v, 0)
+  return (
+    <div className="grid gap-3">
+      <div className="flex items-baseline justify-between border-b pb-2">
+        <span className="text-xs uppercase tracking-wider text-muted-foreground">
+          Cumulative since uptime
+        </span>
+        <span className="num-display font-mono text-base font-semibold">{formatNumber(total)}</span>
+      </div>
+      <ul className="grid gap-1.5 text-xs">
+        {rows.map(([label, v, color]) => {
+          const pct = total > 0 ? (v / total) * 100 : 0
+          return (
+            <li key={label} className="flex items-center gap-3">
+              <span
+                className="inline-block h-2 w-2 shrink-0 rounded-sm"
+                style={{ backgroundColor: color }}
+              />
+              <span className="w-16 text-muted-foreground">{label}</span>
+              <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
+                <div
+                  className="h-full"
+                  style={{
+                    width: `${Math.min(100, Math.max(0, pct))}%`,
+                    backgroundColor: color
+                  }}
+                />
+              </div>
+              <span className="num-display w-20 text-right font-mono">{formatNumber(v)}</span>
+              <span className="num-display w-12 text-right font-mono text-muted-foreground">
+                {pct.toFixed(1)}%
+              </span>
+            </li>
+          )
+        })}
+      </ul>
     </div>
   )
 }
@@ -390,11 +723,13 @@ function OpsRateBlock({ stats, series }: { stats: ServerStats; series: Series })
     stats.opcounters.getmore +
     stats.opcounters.command
 
-  const tiles: Array<[string, ChartPoint[], string]> = [
-    ['query', series.opsPerSecByKind.query, 'hsl(var(--primary))'],
-    ['insert', series.opsPerSecByKind.insert, 'hsl(var(--success))'],
-    ['update', series.opsPerSecByKind.update, '#fb923c'],
-    ['delete', series.opsPerSecByKind.delete, '#f472b6']
+  const tiles: Array<[string, ChartPoint[], string, number]> = [
+    ['query', series.opsPerSecByKind.query, 'hsl(var(--primary))', stats.opcounters.query],
+    ['insert', series.opsPerSecByKind.insert, 'hsl(var(--success))', stats.opcounters.insert],
+    ['update', series.opsPerSecByKind.update, '#fb923c', stats.opcounters.update],
+    ['delete', series.opsPerSecByKind.delete, '#f472b6', stats.opcounters.delete],
+    ['getmore', series.opsPerSecByKind.getmore, '#60a5fa', stats.opcounters.getmore],
+    ['command', series.opsPerSecByKind.command, '#a78bfa', stats.opcounters.command]
   ]
 
   return (
@@ -407,8 +742,8 @@ function OpsRateBlock({ stats, series }: { stats: ServerStats; series: Series })
         formatY={(v) => v.toFixed(v < 10 ? 1 : 0)}
         yMin={0}
       />
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        {tiles.map(([label, s, color]) => (
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+        {tiles.map(([label, s, color, cumulative]) => (
           <div key={label} className="grid gap-1 rounded-md border bg-background/30 p-3">
             <div className="flex items-center gap-1.5 text-xs uppercase tracking-wider text-muted-foreground">
               <span
@@ -422,6 +757,9 @@ function OpsRateBlock({ stats, series }: { stats: ServerStats; series: Series })
               <span className="text-xs font-normal text-muted-foreground">/s</span>
             </div>
             <Sparkline values={s.map((p) => p.value)} color={color} height={24} fillOpacity={0.2} />
+            <div className="font-mono text-[10px] text-muted-foreground">
+              {formatCompact(cumulative)} total
+            </div>
           </div>
         ))}
       </div>
@@ -684,7 +1022,8 @@ function AssertsBlock({ stats, totalAsserts }: { stats: ServerStats; totalAssert
           ['regular', stats.asserts.regular],
           ['warning', stats.asserts.warning],
           ['user', stats.asserts.user],
-          ['msg', stats.asserts.msg]
+          ['msg', stats.asserts.msg],
+          ['rollovers', stats.asserts.rollovers]
         ].map(([label, value]) => (
           <li key={label} className="flex justify-between">
             <span className="text-muted-foreground">{label}</span>
@@ -926,6 +1265,14 @@ function formatNumber(n: number): string {
   return n.toLocaleString()
 }
 
+function formatCompact(n: number): string {
+  if (!Number.isFinite(n)) return '—'
+  if (Math.abs(n) < 1000) return n.toFixed(0)
+  if (Math.abs(n) < 1_000_000) return `${(n / 1000).toFixed(1)}k`
+  if (Math.abs(n) < 1_000_000_000) return `${(n / 1_000_000).toFixed(2)}M`
+  return `${(n / 1_000_000_000).toFixed(2)}B`
+}
+
 function formatUptime(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return '—'
   const days = Math.floor(seconds / 86400)
@@ -973,7 +1320,14 @@ const EMPTY_HISTORY: StatsSample[] = []
 function derive(history: StatsSample[]): Series {
   const empty: Series = {
     opsPerSec: [],
-    opsPerSecByKind: { query: [], insert: [], update: [], delete: [] },
+    opsPerSecByKind: {
+      query: [],
+      insert: [],
+      update: [],
+      delete: [],
+      getmore: [],
+      command: []
+    },
     connections: [],
     cacheFillPct: [],
     residentMb: [],
@@ -1029,6 +1383,14 @@ function derive(history: StatsSample[]): Series {
     empty.opsPerSecByKind.delete.push({
       ts: cur.ts,
       value: Math.max(0, (cur.data.opcounters.delete - prev.data.opcounters.delete) / dt)
+    })
+    empty.opsPerSecByKind.getmore.push({
+      ts: cur.ts,
+      value: Math.max(0, (cur.data.opcounters.getmore - prev.data.opcounters.getmore) / dt)
+    })
+    empty.opsPerSecByKind.command.push({
+      ts: cur.ts,
+      value: Math.max(0, (cur.data.opcounters.command - prev.data.opcounters.command) / dt)
     })
 
     const bytesDelta =
