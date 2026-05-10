@@ -211,7 +211,11 @@ export class DatabaseService {
       host: stringOr(status['host'], 'unknown'),
       version: stringOr(status['version'], 'unknown'),
       uptimeSeconds: numberOr(status['uptime'], 0),
-      process: stringOr(status['process'], 'unknown'),
+      // Some launchers (mongodb-memory-server, custom installs) spawn
+      // mongod with a full path as argv[0], which then leaks back through
+      // `serverStatus.process`. Reduce to the basename so the dashboard
+      // shows `mongod` / `mongos` rather than a filesystem path.
+      process: basename(stringOr(status['process'], 'unknown')),
       ...(storageEngine !== undefined ? { storageEngine } : {}),
       connections: {
         current: numberOr(conn['current'], 0),
@@ -324,6 +328,11 @@ function numberOr(value: unknown, fallback: number): number {
 
 function stringOr(value: unknown, fallback: string): string {
   return typeof value === 'string' ? value : fallback
+}
+
+function basename(path: string): string {
+  const idx = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
+  return idx >= 0 ? path.slice(idx + 1) : path
 }
 
 function assertCollectionName(name: string): void {
