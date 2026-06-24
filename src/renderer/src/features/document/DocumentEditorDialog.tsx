@@ -17,7 +17,7 @@ import { parseMongoDocuments, parseMongoQuery } from '@/lib/mongoQueryLang'
 import { serializeMongoValue } from '@/lib/mongoQuerySerialize'
 import type { DocumentEnvelope, UuidEncoding } from '@shared/types'
 
-export type EditorMode = 'view' | 'edit' | 'duplicate' | 'insert' | 'insert-many'
+export type EditorMode = 'view' | 'edit' | 'duplicate' | 'insert'
 
 type Props = {
   mode: EditorMode | null
@@ -36,8 +36,7 @@ const TITLES: Record<EditorMode, string> = {
   view: 'View document',
   edit: 'Edit document',
   duplicate: 'Duplicate document',
-  insert: 'Insert document',
-  'insert-many': 'Insert documents'
+  insert: 'Insert documents'
 }
 
 const DESCRIPTIONS: Record<EditorMode, string> = {
@@ -45,13 +44,10 @@ const DESCRIPTIONS: Record<EditorMode, string> = {
   edit: 'Edit using mongo shell syntax — ObjectId("…"), ISODate("…"), NumberLong("…"), UUID/JUUID, regex literals.',
   duplicate: 'A copy with the original _id removed. Save inserts a new document with a fresh _id.',
   insert:
-    'New document — mongo shell syntax. Leave _id out and the server will assign a fresh ObjectId.',
-  'insert-many':
     'Multiple documents, one after another newline, comma-separated or JSON array. Leave _id out for a fresh ObjectId.'
 }
 
 const INSERT_TEMPLATE = '{\n  \n}'
-const INSERT_MANY_TEMPLATE = '{\n  \n}\n{\n  \n}'
 
 /**
  * Read the canonical EJSON document carried by an envelope, then re-render
@@ -99,7 +95,7 @@ export function DocumentEditorDialog({
   timezone,
   onClose
 }: Props) {
-  const open = mode !== null && (mode === 'insert' || mode === 'insert-many' || envelope !== null)
+  const open = mode !== null && (mode === 'insert' || envelope !== null)
   const [value, setValue] = useState('')
   const [serverError, setServerError] = useState<string | null>(null)
   const queryClient = useQueryClient()
@@ -111,10 +107,6 @@ export function DocumentEditorDialog({
       setValue(INSERT_TEMPLATE)
       return
     }
-    if (mode === 'insert-many') {
-      setValue(INSERT_MANY_TEMPLATE)
-      return
-    }
     if (!envelope) return
     const rendered = shellRenderOf(envelope, uuidEncoding, timezone)
     setValue(mode === 'duplicate' ? stripIdShell(rendered, uuidEncoding, timezone) : rendered)
@@ -124,7 +116,7 @@ export function DocumentEditorDialog({
     { ok: true; ejson: string; documents: string[] } | { ok: false; error: string }
   >(() => {
     if (mode === 'view' || mode === null) return { ok: true, ejson: '', documents: [] }
-    if (mode === 'insert-many') {
+    if (mode === 'insert') {
       const parsed = parseMongoDocuments(value)
       if (!parsed.ok) return { ok: false, error: parsed.error }
       if (parsed.documents.length === 0) return { ok: false, error: 'Enter at least one document' }
@@ -155,10 +147,10 @@ export function DocumentEditorDialog({
           replacement: compiled.ejson
         })
       }
-      if (mode === 'insert-many') {
+      if (mode === 'insert') {
         return api.query.insertMany({ connectionId, db, coll, documents: compiled.documents })
       }
-      if (mode === 'duplicate' || mode === 'insert') {
+      if (mode === 'duplicate') {
         return api.query.insertOne({ connectionId, db, coll, document: compiled.ejson })
       }
       throw new Error('Cannot save in view mode')
@@ -171,9 +163,7 @@ export function DocumentEditorDialog({
           ? 'Document updated'
           : mode === 'duplicate'
             ? 'Document duplicated'
-            : mode === 'insert-many'
-              ? `Inserted ${manyCount} document${manyCount === 1 ? '' : 's'}`
-              : 'Document inserted'
+            : `Inserted ${manyCount} document${manyCount === 1 ? '' : 's'}`
       toast.success(successMessage)
       onClose()
     },
@@ -190,7 +180,7 @@ export function DocumentEditorDialog({
   if (!mode) return null
 
   // Insert needs neither envelope nor _id; the others can't render without one.
-  if (mode !== 'insert' && mode !== 'insert-many' && !envelope) return null
+  if (mode !== 'insert' && !envelope) return null
 
   const parseError = compiled.ok ? null : compiled.error
   const isReadOnly = mode === 'view'
@@ -199,11 +189,9 @@ export function DocumentEditorDialog({
       ? 'Save changes'
       : mode === 'duplicate'
         ? 'Insert duplicate'
-        : mode === 'insert-many'
-          ? manyCount > 0
-            ? `Insert ${manyCount} document${manyCount === 1 ? '' : 's'}`
-            : 'Insert documents'
-          : 'Insert document'
+        : manyCount > 0
+          ? `Insert ${manyCount} document${manyCount === 1 ? '' : 's'}`
+          : 'Insert documents'
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -235,7 +223,7 @@ export function DocumentEditorDialog({
           }
         >
           <Editor
-            key={mode === 'insert' || mode === 'insert-many' ? mode : `${envelope?.id}::${mode}`}
+            key={mode === 'insert' ? 'insert' : `${envelope?.id}::${mode}`}
             height="100%"
             width="100%"
             value={value}

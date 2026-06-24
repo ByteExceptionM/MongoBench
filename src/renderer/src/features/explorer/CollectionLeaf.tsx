@@ -5,7 +5,6 @@ import {
   ClipboardCopy,
   Eye,
   FilePlus2,
-  Files,
   Info,
   KeyRound,
   Loader2,
@@ -41,7 +40,7 @@ import { RenameCollectionDialog } from '@/features/collection/RenameCollectionDi
 import { DocumentEditorDialog } from '@/features/document/DocumentEditorDialog'
 import { useQuery } from '@tanstack/react-query'
 
-type DialogState = 'info' | 'rename' | 'drop' | 'indexes' | 'insert' | 'insert-many' | null
+type DialogState = 'info' | 'rename' | 'drop' | 'indexes' | 'insert' | null
 
 export function CollectionLeaf({
   connectionId,
@@ -145,10 +144,6 @@ export function CollectionLeaf({
           <ContextMenuSeparator />
           <ContextMenuItem onSelect={() => setDialog('insert')} disabled={type === 'view'}>
             <FilePlus2 className="h-4 w-4" />
-            Insert document…
-          </ContextMenuItem>
-          <ContextMenuItem onSelect={() => setDialog('insert-many')} disabled={type === 'view'}>
-            <Files className="h-4 w-4" />
             Insert documents…
           </ContextMenuItem>
           <ContextMenuItem onSelect={() => setDialog('indexes')} disabled={type === 'view'}>
@@ -187,7 +182,7 @@ export function CollectionLeaf({
       />
 
       <DocumentEditorDialog
-        mode={dialog === 'insert' ? 'insert' : dialog === 'insert-many' ? 'insert-many' : null}
+        mode={dialog === 'insert' ? 'insert' : null}
         envelope={null}
         connectionId={connectionId}
         db={db}
