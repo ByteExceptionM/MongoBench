@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseMongoQuery } from './mongoQueryLang'
+import { parseMongoDocuments, parseMongoQuery } from './mongoQueryLang'
 
 describe('parseMongoQuery', () => {
   it('returns empty ejson for blank input', () => {
@@ -141,5 +141,87 @@ describe('parseMongoQuery', () => {
       expect(JSON.parse(r.ejson)).toEqual({
         payload: { $binary: { base64: 'AQID', subType: '00' } }
       })
+  })
+})
+
+describe('parseMongoDocuments', () => {
+  it('returns no documents for blank input', () => {
+    const r = parseMongoDocuments('   ')
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.documents).toEqual([])
+  })
+
+  it('parses a single document', () => {
+    const r = parseMongoDocuments('{ name: "ada" }')
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.documents.map((d) => JSON.parse(d))).toEqual([{ name: 'ada' }])
+  })
+
+  it('parses newline-separated documents without an array', () => {
+    const r = parseMongoDocuments('{ a: 1 }\n{ b: 2 }\n{ c: 3 }')
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.documents.map((d) => JSON.parse(d))).toEqual([{ a: 1 }, { b: 2 }, { c: 3 }])
+  })
+
+  it('tolerates comma separators between documents', () => {
+    const r = parseMongoDocuments('{ a: 1 },\n{ b: 2 },')
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.documents.map((d) => JSON.parse(d))).toEqual([{ a: 1 }, { b: 2 }])
+  })
+
+  it('treats commas as fully optional separators in any position', () => {
+    const inputs = [
+      '{ a: 1 }\n{ b: 2 }',
+      '{ a: 1 },\n{ b: 2 },',
+      '{ a: 1 },\n{ b: 2 }',
+      ',{ a: 1 },,{ b: 2 },,'
+    ]
+    for (const input of inputs) {
+      const r = parseMongoDocuments(input)
+      expect(r.ok).toBe(true)
+      if (r.ok) expect(r.documents.map((d) => JSON.parse(d))).toEqual([{ a: 1 }, { b: 2 }])
+    }
+  })
+
+  it('rewrites shell helpers inside each document', () => {
+    const r = parseMongoDocuments(
+      '{ _id: ObjectId("507f1f77bcf86cd799439011") }\n{ at: ISODate("2024-01-01T00:00:00Z") }'
+    )
+    expect(r.ok).toBe(true)
+    if (r.ok)
+      expect(r.documents.map((d) => JSON.parse(d))).toEqual([
+        { _id: { $oid: '507f1f77bcf86cd799439011' } },
+        { at: { $date: '2024-01-01T00:00:00Z' } }
+      ])
+  })
+
+  it('flattens a top-level array of documents', () => {
+    const r = parseMongoDocuments('[{ a: 1 }, { b: 2 }]')
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.documents.map((d) => JSON.parse(d))).toEqual([{ a: 1 }, { b: 2 }])
+  })
+
+  it('mixes bare documents and arrays', () => {
+    const r = parseMongoDocuments('{ a: 1 }\n[{ b: 2 }, { c: 3 }]\n{ d: 4 }')
+    expect(r.ok).toBe(true)
+    if (r.ok)
+      expect(r.documents.map((d) => JSON.parse(d))).toEqual([
+        { a: 1 },
+        { b: 2 },
+        { c: 3 },
+        { d: 4 }
+      ])
+  })
+
+  it('rejects a non-object element inside an array', () => {
+    const r = parseMongoDocuments('[{ a: 1 }, 42]')
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.error).toMatch(/must be an object/)
+  })
+
+  it('rejects a non-object document in the sequence', () => {
+    const r = parseMongoDocuments('{ a: 1 }\n42')
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.error).toMatch(/must be an object/)
   })
 })
