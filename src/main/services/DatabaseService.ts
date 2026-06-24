@@ -35,10 +35,12 @@ export class DatabaseService {
       .db(db)
       .listCollections({}, { nameOnly: true, authorizedCollections: authOnly })
     const items = await cursor.toArray()
-    return items.map((info) => ({
-      name: info.name as string,
-      type: (info.type as 'collection' | 'view' | undefined) ?? 'collection'
-    }))
+    return items
+      .map((info) => ({
+        name: info.name as string,
+        type: (info.type as 'collection' | 'view' | undefined) ?? 'collection'
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name))
   }
 
   async collectionStats(connectionId: string, db: string, coll: string): Promise<CollectionStats> {

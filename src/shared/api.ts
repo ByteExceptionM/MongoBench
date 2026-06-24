@@ -22,6 +22,8 @@ import type {
   FindRequest,
   FindResponse,
   IndexInfo,
+  InsertManyRequest,
+  InsertManyResponse,
   InsertOneRequest,
   InsertOneResponse,
   RenameCollectionPayload,
@@ -86,6 +88,7 @@ export type Api = {
     count: (request: CountRequest) => Promise<Result<CountResponse>>
     replaceOne: (request: ReplaceOneRequest) => Promise<Result<ReplaceOneResponse>>
     insertOne: (request: InsertOneRequest) => Promise<Result<InsertOneResponse>>
+    insertMany: (request: InsertManyRequest) => Promise<Result<InsertManyResponse>>
     deleteOne: (request: DeleteOneRequest) => Promise<Result<DeleteOneResponse>>
     deleteMany: (request: DeleteManyRequest) => Promise<Result<DeleteManyResponse>>
   }

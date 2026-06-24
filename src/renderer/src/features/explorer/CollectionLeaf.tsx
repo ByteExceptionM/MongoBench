@@ -144,7 +144,7 @@ export function CollectionLeaf({
           <ContextMenuSeparator />
           <ContextMenuItem onSelect={() => setDialog('insert')} disabled={type === 'view'}>
             <FilePlus2 className="h-4 w-4" />
-            Insert document…
+            Insert documents…
           </ContextMenuItem>
           <ContextMenuItem onSelect={() => setDialog('indexes')} disabled={type === 'view'}>
             <KeyRound className="h-4 w-4" />

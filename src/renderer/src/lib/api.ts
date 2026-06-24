@@ -23,6 +23,8 @@ import type {
   FindRequest,
   FindResponse,
   IndexInfo,
+  InsertManyRequest,
+  InsertManyResponse,
   InsertOneRequest,
   InsertOneResponse,
   RenameCollectionPayload,
@@ -102,6 +104,8 @@ export const api = {
       unwrap(window.api.query.replaceOne(request)),
     insertOne: (request: InsertOneRequest): Promise<InsertOneResponse> =>
       unwrap(window.api.query.insertOne(request)),
+    insertMany: (request: InsertManyRequest): Promise<InsertManyResponse> =>
+      unwrap(window.api.query.insertMany(request)),
     deleteOne: (request: DeleteOneRequest): Promise<DeleteOneResponse> =>
       unwrap(window.api.query.deleteOne(request)),
     deleteMany: (request: DeleteManyRequest): Promise<DeleteManyResponse> =>
