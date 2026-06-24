@@ -21,6 +21,7 @@ import {
   DropUserSchema,
   FindRequestSchema,
   IndexesListSchema,
+  InsertManyRequestSchema,
   InsertOneRequestSchema,
   RenameCollectionSchema,
   ReorderConnectionsSchema,
@@ -210,6 +211,11 @@ export function registerIpcHandlers(services: Services): void {
   ipcMain.handle(
     Channels.QueryInsertOne,
     withResult(InsertOneRequestSchema, (request) => queries.insertOne(request))
+  )
+
+  ipcMain.handle(
+    Channels.QueryInsertMany,
+    withResult(InsertManyRequestSchema, (request) => queries.insertMany(request))
   )
 
   ipcMain.handle(

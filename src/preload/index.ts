@@ -25,6 +25,8 @@ import type {
   FindRequest,
   FindResponse,
   IndexInfo,
+  InsertManyRequest,
+  InsertManyResponse,
   InsertOneRequest,
   InsertOneResponse,
   RenameCollectionPayload,
@@ -77,6 +79,8 @@ const api: Api = {
     replaceOne: (request: ReplaceOneRequest) =>
       invoke<ReplaceOneResponse>('query:replaceOne', request),
     insertOne: (request: InsertOneRequest) => invoke<InsertOneResponse>('query:insertOne', request),
+    insertMany: (request: InsertManyRequest) =>
+      invoke<InsertManyResponse>('query:insertMany', request),
     deleteOne: (request: DeleteOneRequest) => invoke<DeleteOneResponse>('query:deleteOne', request),
     deleteMany: (request: DeleteManyRequest) =>
       invoke<DeleteManyResponse>('query:deleteMany', request)

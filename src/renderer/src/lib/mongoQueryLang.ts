@@ -52,6 +52,50 @@ export function parseMongoQuery(input: string): ParseResult {
   }
 }
 
+export type DocumentsParseSuccess = { ok: true; documents: string[] }
+export type DocumentsParseResult = DocumentsParseSuccess | ParseFailure
+
+export function parseMongoDocuments(input: string): DocumentsParseResult {
+  if (input.trim().length === 0) {
+    return { ok: true, documents: [] }
+  }
+  try {
+    const tokens = tokenize(input)
+    const parser = new Parser(tokens, input)
+    const documents: string[] = []
+    const skipCommas = (): void => {
+      let sep = parser.peek()
+      while (sep && sep.type === 'punct' && sep.value === ',') {
+        parser.advance()
+        sep = parser.peek()
+      }
+    }
+    const pushDocument = (value: unknown, offset: number): void => {
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+        throw new ParseError('Each document must be an object', offset)
+      }
+      documents.push(JSON.stringify(value))
+    }
+    skipCommas()
+    while (parser.peek()) {
+      const offset = parser.peek()!.offset
+      const value = parser.parseValue()
+      if (Array.isArray(value)) {
+        for (const item of value) pushDocument(item, offset)
+      } else {
+        pushDocument(value, offset)
+      }
+      skipCommas()
+    }
+    return { ok: true, documents }
+  } catch (e) {
+    if (e instanceof ParseError) {
+      return { ok: false, error: e.message, offset: e.offset }
+    }
+    return { ok: false, error: e instanceof Error ? e.message : String(e), offset: 0 }
+  }
+}
+
 class ParseError extends Error {
   constructor(
     message: string,
