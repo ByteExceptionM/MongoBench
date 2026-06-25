@@ -10,6 +10,8 @@ import type {
   DocumentEnvelope,
   FindRequest,
   FindResponse,
+  InsertManyRequest,
+  InsertManyResponse,
   InsertOneRequest,
   InsertOneResponse,
   ReplaceOneRequest,
@@ -109,6 +111,14 @@ export class QueryService {
     const document = parseDocument(req.document)
     const result = await coll.insertOne(document)
     return { insertedId: toCanonicalString(result.insertedId) }
+  }
+
+  async insertMany(req: InsertManyRequest): Promise<InsertManyResponse> {
+    const client = this.connections.getClient(req.connectionId)
+    const coll = client.db(req.db).collection(req.coll)
+    const documents = req.documents.map(parseDocument)
+    const result = await coll.insertMany(documents)
+    return { insertedIds: Object.values(result.insertedIds).map((id) => toCanonicalString(id)) }
   }
 
   /**

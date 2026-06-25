@@ -354,6 +354,17 @@ export type InsertOneResponse = {
   insertedId: string
 }
 
+export type InsertManyRequest = {
+  connectionId: string
+  db: string
+  coll: string
+  documents: string[]
+}
+
+export type InsertManyResponse = {
+  insertedIds: string[]
+}
+
 export type DeleteOneRequest = {
   connectionId: string
   db: string

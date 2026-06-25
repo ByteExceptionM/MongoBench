@@ -13,7 +13,7 @@ import {
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { api, ApiError } from '@/lib/api'
-import { parseMongoQuery } from '@/lib/mongoQueryLang'
+import { parseMongoDocuments, parseMongoQuery } from '@/lib/mongoQueryLang'
 import { serializeMongoValue } from '@/lib/mongoQuerySerialize'
 import type { DocumentEnvelope, UuidEncoding } from '@shared/types'
 
@@ -36,7 +36,7 @@ const TITLES: Record<EditorMode, string> = {
   view: 'View document',
   edit: 'Edit document',
   duplicate: 'Duplicate document',
-  insert: 'Insert document'
+  insert: 'Insert documents'
 }
 
 const DESCRIPTIONS: Record<EditorMode, string> = {
@@ -44,7 +44,7 @@ const DESCRIPTIONS: Record<EditorMode, string> = {
   edit: 'Edit using mongo shell syntax — ObjectId("…"), ISODate("…"), NumberLong("…"), UUID/JUUID, regex literals.',
   duplicate: 'A copy with the original _id removed. Save inserts a new document with a fresh _id.',
   insert:
-    'New document — mongo shell syntax. Leave _id out and the server will assign a fresh ObjectId.'
+    'Multiple documents, one after another newline, comma-separated or JSON array. Leave _id out for a fresh ObjectId.'
 }
 
 const INSERT_TEMPLATE = '{\n  \n}'
@@ -112,15 +112,25 @@ export function DocumentEditorDialog({
     setValue(mode === 'duplicate' ? stripIdShell(rendered, uuidEncoding, timezone) : rendered)
   }, [envelope, mode, uuidEncoding, timezone])
 
-  const compiled = useMemo(() => {
-    if (mode === 'view' || mode === null) return { ok: true as const, ejson: '' }
-    const parsed = parseMongoQuery(value)
-    if (!parsed.ok) return { ok: false as const, error: parsed.error }
-    if (parsed.value === null || typeof parsed.value !== 'object' || Array.isArray(parsed.value)) {
-      return { ok: false as const, error: 'Document must be an object' }
+  const compiled = useMemo<
+    { ok: true; ejson: string; documents: string[] } | { ok: false; error: string }
+  >(() => {
+    if (mode === 'view' || mode === null) return { ok: true, ejson: '', documents: [] }
+    if (mode === 'insert') {
+      const parsed = parseMongoDocuments(value)
+      if (!parsed.ok) return { ok: false, error: parsed.error }
+      if (parsed.documents.length === 0) return { ok: false, error: 'Enter at least one document' }
+      return { ok: true, ejson: '', documents: parsed.documents }
     }
-    return { ok: true as const, ejson: parsed.ejson }
+    const parsed = parseMongoQuery(value)
+    if (!parsed.ok) return { ok: false, error: parsed.error }
+    if (parsed.value === null || typeof parsed.value !== 'object' || Array.isArray(parsed.value)) {
+      return { ok: false, error: 'Document must be an object' }
+    }
+    return { ok: true, ejson: parsed.ejson, documents: [] }
   }, [value, mode])
+
+  const manyCount = compiled.ok ? compiled.documents.length : 0
 
   const saveMutation = useMutation({
     mutationFn: async () => {
@@ -137,7 +147,10 @@ export function DocumentEditorDialog({
           replacement: compiled.ejson
         })
       }
-      if (mode === 'duplicate' || mode === 'insert') {
+      if (mode === 'insert') {
+        return api.query.insertMany({ connectionId, db, coll, documents: compiled.documents })
+      }
+      if (mode === 'duplicate') {
         return api.query.insertOne({ connectionId, db, coll, document: compiled.ejson })
       }
       throw new Error('Cannot save in view mode')
@@ -150,7 +163,7 @@ export function DocumentEditorDialog({
           ? 'Document updated'
           : mode === 'duplicate'
             ? 'Document duplicated'
-            : 'Document inserted'
+            : `Inserted ${manyCount} document${manyCount === 1 ? '' : 's'}`
       toast.success(successMessage)
       onClose()
     },
@@ -172,7 +185,13 @@ export function DocumentEditorDialog({
   const parseError = compiled.ok ? null : compiled.error
   const isReadOnly = mode === 'view'
   const ctaLabel =
-    mode === 'edit' ? 'Save changes' : mode === 'duplicate' ? 'Insert duplicate' : 'Insert document'
+    mode === 'edit'
+      ? 'Save changes'
+      : mode === 'duplicate'
+        ? 'Insert duplicate'
+        : manyCount > 0
+          ? `Insert ${manyCount} document${manyCount === 1 ? '' : 's'}`
+          : 'Insert documents'
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>

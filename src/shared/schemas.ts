@@ -221,6 +221,15 @@ export const InsertOneRequestSchema = z
   })
   .strict()
 
+export const InsertManyRequestSchema = z
+  .object({
+    connectionId: z.string().uuid(),
+    db: dbName,
+    coll: collName,
+    documents: z.array(documentString).min(1).max(10_000)
+  })
+  .strict()
+
 export const DeleteOneRequestSchema = z
   .object({
     connectionId: z.string().uuid(),

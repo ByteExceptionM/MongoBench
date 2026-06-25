@@ -37,6 +37,7 @@ export const Channels = {
   QueryCount: 'query:count',
   QueryReplaceOne: 'query:replaceOne',
   QueryInsertOne: 'query:insertOne',
+  QueryInsertMany: 'query:insertMany',
   QueryDeleteOne: 'query:deleteOne',
   QueryDeleteMany: 'query:deleteMany'
 } as const
