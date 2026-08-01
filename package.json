@@ -76,7 +76,7 @@
     "husky": "^9.1.6",
     "lint-staged": "^15.2.10",
     "mongodb-memory-server": "^11.1.0",
-    "postcss": "^8.4.47",
+    "postcss": "^8.5.25",
     "prettier": "^3.3.3",
     "tailwindcss": "^3.4.13",
     "tailwindcss-animate": "^1.0.7",
