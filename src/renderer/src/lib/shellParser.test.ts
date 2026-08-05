@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseShellCommand } from './shellParser'
+import { affectsWholeCollection, isWriteOp, parseShellCommand } from './shellParser'
 
 describe('parseShellCommand', () => {
   it('parses a bare find()', () => {
@@ -71,7 +71,7 @@ describe('parseShellCommand', () => {
   })
 
   it('rejects unsupported methods', () => {
-    const r = parseShellCommand('db.x.insertOne({})')
+    const r = parseShellCommand('db.x.distinct("name")')
     expect(r.ok).toBe(false)
     if (r.ok) return
     expect(r.error).toMatch(/Unsupported method/)
@@ -106,5 +106,104 @@ describe('parseShellCommand', () => {
   it('rejects more than 2 args to find', () => {
     const r = parseShellCommand('db.x.find({}, {}, {})')
     expect(r.ok).toBe(false)
+  })
+})
+
+describe('parseShellCommand write operations', () => {
+  it('parses insertOne', () => {
+    const r = parseShellCommand('db.users.insertOne({ name: "ada", age: NumberInt(36) })')
+    expect(r.ok).toBe(true)
+    if (!r.ok || r.op.kind !== 'insertOne') return
+    expect(JSON.parse(r.op.document)).toEqual({ name: 'ada', age: { $numberInt: '36' } })
+    expect(isWriteOp(r.op)).toBe(true)
+  })
+
+  it('parses insertMany into separate documents', () => {
+    const r = parseShellCommand('db.users.insertMany([{ a: 1 }, { b: 2 }])')
+    expect(r.ok).toBe(true)
+    if (!r.ok || r.op.kind !== 'insertMany') return
+    expect(r.op.documents).toEqual(['{"a":1}', '{"b":2}'])
+  })
+
+  it('rejects insertMany with a non object entry', () => {
+    expect(parseShellCommand('db.users.insertMany([1])').ok).toBe(false)
+    expect(parseShellCommand('db.users.insertMany([])').ok).toBe(false)
+  })
+
+  it('parses updateOne and updateMany', () => {
+    const one = parseShellCommand('db.users.updateOne({ _id: 1 }, { $set: { active: true } })')
+    expect(one.ok).toBe(true)
+    if (!one.ok || one.op.kind !== 'updateOne') return
+    expect(JSON.parse(one.op.filter)).toEqual({ _id: 1 })
+    expect(JSON.parse(one.op.update)).toEqual({ $set: { active: true } })
+    expect(one.op.upsert).toBe(false)
+
+    const many = parseShellCommand('db.users.updateMany({}, { $unset: { tmp: "" } })')
+    expect(many.ok && many.op.kind === 'updateMany').toBe(true)
+  })
+
+  it('reads the upsert option', () => {
+    const r = parseShellCommand(
+      'db.users.updateOne({ a: 1 }, { $set: { b: 2 } }, { upsert: true })'
+    )
+    expect(r.ok).toBe(true)
+    if (!r.ok || r.op.kind !== 'updateOne') return
+    expect(r.op.upsert).toBe(true)
+  })
+
+  it('rejects unsupported options', () => {
+    const r = parseShellCommand('db.users.updateOne({}, { $set: { a: 1 } }, { arrayFilters: [] })')
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.error).toMatch(/arrayFilters/)
+  })
+
+  it('requires update operators in an update document', () => {
+    const r = parseShellCommand('db.users.updateOne({ a: 1 }, { b: 2 })')
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.error).toMatch(/update operators/)
+  })
+
+  it('accepts an aggregation pipeline as update', () => {
+    const r = parseShellCommand('db.users.updateMany({}, [{ $set: { n: { $add: ["$n", 1] } } }])')
+    expect(r.ok).toBe(true)
+  })
+
+  it('parses replaceOne', () => {
+    const r = parseShellCommand('db.users.replaceOne({ _id: 1 }, { name: "ada" })')
+    expect(r.ok).toBe(true)
+    if (!r.ok || r.op.kind !== 'replaceOne') return
+    expect(JSON.parse(r.op.replacement)).toEqual({ name: 'ada' })
+  })
+
+  it('parses deleteOne and deleteMany', () => {
+    const one = parseShellCommand('db.users.deleteOne({ _id: 1 })')
+    expect(one.ok && one.op.kind === 'deleteOne').toBe(true)
+    const many = parseShellCommand('db.users.deleteMany({ archived: true })')
+    expect(many.ok && many.op.kind === 'deleteMany').toBe(true)
+  })
+
+  it('requires an explicit filter for deletes and updates', () => {
+    expect(parseShellCommand('db.users.deleteMany()').ok).toBe(false)
+    expect(parseShellCommand('db.users.updateOne({})').ok).toBe(false)
+  })
+
+  it('flags commands that hit the whole collection', () => {
+    const wide = parseShellCommand('db.users.deleteMany({})')
+    expect(wide.ok && affectsWholeCollection(wide.op)).toBe(true)
+    const narrow = parseShellCommand('db.users.deleteMany({ a: 1 })')
+    expect(narrow.ok && affectsWholeCollection(narrow.op)).toBe(false)
+    const read = parseShellCommand('db.users.find({})')
+    expect(read.ok && affectsWholeCollection(read.op)).toBe(false)
+  })
+
+  it('rejects chained calls on write operations', () => {
+    expect(parseShellCommand('db.users.deleteMany({}).limit(1)').ok).toBe(false)
+  })
+
+  it('separates reads from writes', () => {
+    const read = parseShellCommand('db.users.find({})')
+    expect(read.ok && isWriteOp(read.op)).toBe(false)
   })
 })

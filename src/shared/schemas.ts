@@ -249,6 +249,39 @@ export const DeleteManyRequestSchema = z
   })
   .strict()
 
+export const UpdateByFilterRequestSchema = z
+  .object({
+    connectionId: z.string().uuid(),
+    db: dbName,
+    coll: collName,
+    filter: ejsonString,
+    update: documentString,
+    many: z.boolean(),
+    upsert: z.boolean()
+  })
+  .strict()
+
+export const DeleteByFilterRequestSchema = z
+  .object({
+    connectionId: z.string().uuid(),
+    db: dbName,
+    coll: collName,
+    filter: ejsonString,
+    many: z.boolean()
+  })
+  .strict()
+
+export const ReplaceByFilterRequestSchema = z
+  .object({
+    connectionId: z.string().uuid(),
+    db: dbName,
+    coll: collName,
+    filter: ejsonString,
+    replacement: documentString,
+    upsert: z.boolean()
+  })
+  .strict()
+
 const indexName = z
   .string()
   .min(1)

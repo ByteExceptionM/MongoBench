@@ -39,7 +39,10 @@ export const Channels = {
   QueryInsertOne: 'query:insertOne',
   QueryInsertMany: 'query:insertMany',
   QueryDeleteOne: 'query:deleteOne',
-  QueryDeleteMany: 'query:deleteMany'
+  QueryDeleteMany: 'query:deleteMany',
+  QueryUpdateByFilter: 'query:updateByFilter',
+  QueryDeleteByFilter: 'query:deleteByFilter',
+  QueryReplaceByFilter: 'query:replaceByFilter'
 } as const
 
 export type ChannelName = (typeof Channels)[keyof typeof Channels]

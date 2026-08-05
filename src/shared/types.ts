@@ -399,6 +399,59 @@ export type ReplaceOneResponse = {
   modified: number
 }
 
+/**
+ * Filter based write, issued by the shell surface. The id based
+ * `replaceOne` / `deleteOne` / `deleteMany` requests above stay reserved
+ * for the document table, which knows the exact documents it touches.
+ */
+export type UpdateByFilterRequest = {
+  connectionId: string
+  db: string
+  coll: string
+  /** Canonical-EJSON string of the filter. */
+  filter: string
+  /** Canonical-EJSON string of the update document (must use operators). */
+  update: string
+  /** false = updateOne, true = updateMany. */
+  many: boolean
+  upsert: boolean
+}
+
+export type UpdateByFilterResponse = {
+  matched: number
+  modified: number
+  upsertedId: string | null
+}
+
+export type DeleteByFilterRequest = {
+  connectionId: string
+  db: string
+  coll: string
+  filter: string
+  /** false = deleteOne, true = deleteMany. */
+  many: boolean
+}
+
+export type DeleteByFilterResponse = {
+  deletedCount: number
+}
+
+export type ReplaceByFilterRequest = {
+  connectionId: string
+  db: string
+  coll: string
+  filter: string
+  /** Canonical-EJSON string of the replacement document. */
+  replacement: string
+  upsert: boolean
+}
+
+export type ReplaceByFilterResponse = {
+  matched: number
+  modified: number
+  upsertedId: string | null
+}
+
 export type FindRequest = {
   connectionId: string
   db: string

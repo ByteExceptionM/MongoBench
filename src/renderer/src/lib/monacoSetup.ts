@@ -11,6 +11,7 @@ import EditorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker'
 import JsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker'
 import * as monaco from 'monaco-editor'
 import { loader } from '@monaco-editor/react'
+import { registerMongoLanguageProviders } from './monacoCompletions'
 
 self.MonacoEnvironment = {
   getWorker(_workerId, label) {
@@ -223,6 +224,8 @@ monaco.editor.defineTheme('mongobench-dark', {
     'scrollbarSlider.activeBackground': '#4a5260cc'
   }
 })
+
+registerMongoLanguageProviders()
 
 loader.config({ monaco })
 

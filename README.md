@@ -116,15 +116,16 @@ Per-database user management. Common-role shortcuts plus arbitrary custom roles.
 
 ### Query modes
 
-| Mode            | Surface                                   | Highlights                                                                                                             |
-| --------------- | ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| **Simple**      | filter · projection · sort · skip · limit | EJSON or shell syntax, field-name autocomplete from last results                                                       |
-| **Aggregation** | pipeline as `[{ $match: … }, …]`          | Monaco, full operator autocomplete                                                                                     |
-| **Shell**       | `db.coll.find({…}).sort({…}).limit(n)`    | Curated subset of mongosh syntax — `find`, `findOne`, `aggregate`, `count`, `countDocuments`, `estimatedDocumentCount` |
+| Mode            | Surface                                   | Highlights                                                                                                                                                                                                                                             |
+| --------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Simple**      | filter · projection · sort · skip · limit | EJSON or shell syntax, field-name autocomplete from last results                                                                                                                                                                                       |
+| **Aggregation** | pipeline as `[{ $match: … }, …]`          | Monaco, full operator autocomplete                                                                                                                                                                                                                     |
+| **Shell**       | `db.coll.find({…}).sort({…}).limit(n)`    | Curated subset of mongosh syntax - reads (`find`, `findOne`, `aggregate`, `count`, `countDocuments`) and writes (`insertOne`, `insertMany`, `updateOne`, `updateMany`, `replaceOne`, `deleteOne`, `deleteMany`), across any collection of the database |
 
 - **Run:** click button or `Ctrl+Enter` / `Cmd+Enter`
 - **Format:** `Shift+Alt+F` — custom formatter that preserves shell helpers
-- **Operator autocomplete** for every standard query operator (`$eq`, `$in`, `$elemMatch`, `$geoWithin`, `$jsonSchema`, …)
+- **Context-aware autocomplete:** query operators in filters, stages and expressions in pipelines, update operators inside `updateOne` / `updateMany`, `db` → collection → method chaining in the shell, plus parameter hints and hover docs
+- **Guardrails:** write commands never run on a refetch, only on an explicit Run, and `deleteMany({})` / `updateMany({})` ask before touching the whole collection
 
 ### Documents
 

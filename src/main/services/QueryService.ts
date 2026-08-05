@@ -1,8 +1,10 @@
-import type { Document, Filter, Sort } from 'mongodb'
+import type { Document, Filter, Sort, UpdateFilter } from 'mongodb'
 import { EJSON } from 'bson'
 import type {
   AggregateRequest,
   AggregateResponse,
+  DeleteByFilterRequest,
+  DeleteByFilterResponse,
   DeleteManyRequest,
   DeleteManyResponse,
   DeleteOneRequest,
@@ -14,8 +16,12 @@ import type {
   InsertManyResponse,
   InsertOneRequest,
   InsertOneResponse,
+  ReplaceByFilterRequest,
+  ReplaceByFilterResponse,
   ReplaceOneRequest,
-  ReplaceOneResponse
+  ReplaceOneResponse,
+  UpdateByFilterRequest,
+  UpdateByFilterResponse
 } from '@shared/types'
 import type { ConnectionService } from './ConnectionService'
 import { canonicalHash, parseFilter, toCanonicalString, toRelaxed } from '../lib/ejson'
@@ -155,6 +161,46 @@ export class QueryService {
     const result = await coll.deleteOne(idFilter)
     return { deletedCount: result.deletedCount }
   }
+
+  async updateByFilter(req: UpdateByFilterRequest): Promise<UpdateByFilterResponse> {
+    const client = this.connections.getClient(req.connectionId)
+    const coll = client.db(req.db).collection(req.coll)
+    const filter = parseFilter(req.filter) as Filter<Document>
+    const update = parseUpdate(req.update)
+
+    const result = req.many
+      ? await coll.updateMany(filter, update, { upsert: req.upsert })
+      : await coll.updateOne(filter, update, { upsert: req.upsert })
+
+    return {
+      matched: result.matchedCount,
+      modified: result.modifiedCount,
+      upsertedId: result.upsertedId ? toCanonicalString(result.upsertedId) : null
+    }
+  }
+
+  async deleteByFilter(req: DeleteByFilterRequest): Promise<DeleteByFilterResponse> {
+    const client = this.connections.getClient(req.connectionId)
+    const coll = client.db(req.db).collection(req.coll)
+    const filter = parseFilter(req.filter) as Filter<Document>
+
+    const result = req.many ? await coll.deleteMany(filter) : await coll.deleteOne(filter)
+    return { deletedCount: result.deletedCount }
+  }
+
+  async replaceByFilter(req: ReplaceByFilterRequest): Promise<ReplaceByFilterResponse> {
+    const client = this.connections.getClient(req.connectionId)
+    const coll = client.db(req.db).collection(req.coll)
+    const filter = parseFilter(req.filter) as Filter<Document>
+    const replacement = parseDocument(req.replacement)
+
+    const result = await coll.replaceOne(filter, replacement, { upsert: req.upsert })
+    return {
+      matched: result.matchedCount,
+      modified: result.modifiedCount,
+      upsertedId: result.upsertedId ? toCanonicalString(result.upsertedId) : null
+    }
+  }
 }
 
 function toEnvelope(doc: Document): DocumentEnvelope {
@@ -179,6 +225,28 @@ function parseDocument(canonical: string): Document {
     throw e
   }
   return parsed as Document
+}
+
+/**
+ * Update documents must consist of update operators (`$set`, `$inc`, …) or
+ * be an aggregation pipeline. A plain document would silently replace the
+ * whole record, which is what `replaceByFilter` is for.
+ */
+function parseUpdate(canonical: string): UpdateFilter<Document> | Document[] {
+  const parsed = EJSON.parse(canonical, { relaxed: false })
+  if (Array.isArray(parsed)) return parsePipeline(canonical)
+  if (typeof parsed !== 'object' || parsed === null) {
+    const e = new Error('Update must be a JSON object')
+    e.name = 'ValidationError'
+    throw e
+  }
+  const keys = Object.keys(parsed)
+  if (keys.length === 0 || !keys.every((key) => key.startsWith('$'))) {
+    const e = new Error('Update must only contain update operators such as $set or $inc')
+    e.name = 'ValidationError'
+    throw e
+  }
+  return parsed as UpdateFilter<Document>
 }
 
 function parsePipeline(canonical: string): Document[] {
