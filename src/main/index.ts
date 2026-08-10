@@ -6,12 +6,13 @@ const APP_ICON = app.isPackaged
   ? join(process.resourcesPath, 'icon.png')
   : join(app.getAppPath(), 'build', 'icon.png')
 import log from 'electron-log/main'
+import { EventChannels } from './ipc/channels'
 import { registerIpcHandlers } from './ipc/router'
 import { ConnectionService } from './services/ConnectionService'
 import { DatabaseService } from './services/DatabaseService'
 import { IndexService } from './services/IndexService'
 import { QueryService } from './services/QueryService'
-import { initAutoUpdater } from './services/UpdaterService'
+import { UpdaterService } from './services/UpdaterService'
 import { UserService } from './services/UserService'
 import { ConnectionsRepository } from './stores/ConnectionsRepository'
 import { SecretsStore } from './stores/SecretsStore'
@@ -28,6 +29,9 @@ const services = {
   repo: null as ConnectionsRepository | null,
   connections: null as ConnectionService | null
 }
+
+// Held module-wide so the updater can push progress to the renderer.
+let mainWindow: BrowserWindow | null = null
 
 function createWindow(): void {
   const window = new BrowserWindow({
@@ -48,8 +52,14 @@ function createWindow(): void {
     }
   })
 
+  mainWindow = window
+
   window.once('ready-to-show', () => {
     window.show()
+  })
+
+  window.on('closed', () => {
+    if (mainWindow === window) mainWindow = null
   })
 
   window.webContents.setWindowOpenHandler(({ url }) => {
@@ -100,10 +110,15 @@ app.whenReady().then(() => {
   const queries = new QueryService(connections)
   const users = new UserService(connections)
   const indexes = new IndexService(connections)
+  const updater = new UpdaterService((progress) => {
+    if (mainWindow !== null && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send(EventChannels.UpdaterProgress, progress)
+    }
+  })
   services.repo = repo
   services.connections = connections
 
-  registerIpcHandlers({ repo, connections, databases, queries, users, indexes })
+  registerIpcHandlers({ repo, connections, databases, queries, users, indexes, updater })
 
   createWindow()
 
@@ -112,7 +127,6 @@ app.whenReady().then(() => {
   })
 
   log.info(`MongoBench ${app.getVersion()} ready`)
-  initAutoUpdater()
 })
 
 app.on('before-quit', async (event) => {

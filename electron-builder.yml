@@ -20,8 +20,8 @@ extraResources:
 extraMetadata:
   main: out/main/index.js
 win:
-  # NSIS installer (per-user, no admin) — required by electron-updater
-  # for self-replacing updates. User picks install dir.
+  # NSIS installer (per-user, no admin) — this is what lets a user-accepted
+  # update replace the install without a UAC prompt. User picks install dir.
   target:
     - target: nsis
       arch:
@@ -34,7 +34,7 @@ nsis:
   allowElevation: false
   deleteAppDataOnUninstall: false
 linux:
-  # AppImage is supported by electron-updater for self-update on Linux.
+  # AppImage carries the metadata the in-app update flow needs on Linux.
   target:
     - target: AppImage
       arch:

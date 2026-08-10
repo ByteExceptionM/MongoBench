@@ -32,6 +32,7 @@ import type {
   ServerStats,
   UpdateUserPayload
 } from './types'
+import type { UpdateCheckResult, UpdateProgress } from './events'
 import type { Result } from './result'
 
 /**
@@ -108,5 +109,13 @@ export type Api = {
     }) => Promise<Result<IndexInfo[]>>
     create: (payload: CreateIndexPayload) => Promise<Result<{ name: string }>>
     drop: (payload: DropIndexPayload) => Promise<Result<void>>
+  }
+
+  /** `onProgress` is the only member that is a push subscription, not a request. */
+  updater: {
+    check: () => Promise<Result<UpdateCheckResult>>
+    download: () => Promise<Result<void>>
+    install: () => Promise<Result<void>>
+    onProgress: (listener: (progress: UpdateProgress) => void) => () => void
   }
 }

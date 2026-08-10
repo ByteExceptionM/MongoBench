@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { Api } from '@shared/api'
+import type { UpdateCheckResult, UpdateProgress } from '@shared/events'
 import type { Result } from '@shared/result'
 import type {
   AggregateRequest,
@@ -38,6 +39,19 @@ import type {
 
 const invoke = <T>(channel: string, payload?: unknown): Promise<Result<T>> =>
   ipcRenderer.invoke(channel, payload) as Promise<Result<T>>
+
+/**
+ * Subscribes to a main → renderer push and returns an unsubscribe. The raw
+ * IpcRendererEvent is dropped — it carries `sender`, which would hand the
+ * renderer an Electron object and defeat contextIsolation.
+ */
+const subscribe = <T>(channel: string, listener: (payload: T) => void): (() => void) => {
+  const handler = (_event: unknown, payload: T): void => listener(payload)
+  ipcRenderer.on(channel, handler)
+  return () => {
+    ipcRenderer.removeListener(channel, handler)
+  }
+}
 
 const api: Api = {
   connections: {
@@ -97,6 +111,13 @@ const api: Api = {
       invoke<IndexInfo[]>('indexes:list', payload),
     create: (payload: CreateIndexPayload) => invoke<{ name: string }>('indexes:create', payload),
     drop: (payload: DropIndexPayload) => invoke<void>('indexes:drop', payload)
+  },
+  updater: {
+    check: () => invoke<UpdateCheckResult>('updater:check'),
+    download: () => invoke<void>('updater:download'),
+    install: () => invoke<void>('updater:install'),
+    onProgress: (listener: (progress: UpdateProgress) => void) =>
+      subscribe<UpdateProgress>('updater:progress', listener)
   }
 }
 

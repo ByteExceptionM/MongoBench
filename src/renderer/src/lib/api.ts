@@ -1,3 +1,4 @@
+import type { UpdateCheckResult, UpdateProgress } from '@shared/events'
 import type { ApiErrorPayload, ErrorCode, Result } from '@shared/result'
 import type {
   AggregateRequest,
@@ -124,5 +125,13 @@ export const api = {
     create: (payload: CreateIndexPayload): Promise<{ name: string }> =>
       unwrap(window.api.indexes.create(payload)),
     drop: (payload: DropIndexPayload): Promise<void> => unwrap(window.api.indexes.drop(payload))
+  },
+  updater: {
+    check: (): Promise<UpdateCheckResult> => unwrap(window.api.updater.check()),
+    download: (): Promise<void> => unwrap(window.api.updater.download()),
+    install: (): Promise<void> => unwrap(window.api.updater.install()),
+    // A push subscription — no Result to unwrap.
+    onProgress: (listener: (progress: UpdateProgress) => void): (() => void) =>
+      window.api.updater.onProgress(listener)
   }
 }

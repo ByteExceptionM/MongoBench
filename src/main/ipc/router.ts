@@ -36,6 +36,7 @@ import type { ConnectionService } from '../services/ConnectionService'
 import type { DatabaseService } from '../services/DatabaseService'
 import type { IndexService } from '../services/IndexService'
 import type { QueryService } from '../services/QueryService'
+import type { UpdaterService } from '../services/UpdaterService'
 import type { UserService } from '../services/UserService'
 import { Channels } from './channels'
 
@@ -46,6 +47,7 @@ export type Services = {
   queries: QueryService
   users: UserService
   indexes: IndexService
+  updater: UpdaterService
 }
 
 function withResult<P, R>(
@@ -82,7 +84,7 @@ function withoutInput<R>(fn: () => Promise<R>): (event: IpcMainInvokeEvent) => P
 }
 
 export function registerIpcHandlers(services: Services): void {
-  const { repo, connections, databases, queries, users, indexes } = services
+  const { repo, connections, databases, queries, users, indexes, updater } = services
 
   ipcMain.handle(
     Channels.ConnectionsList,
@@ -273,5 +275,24 @@ export function registerIpcHandlers(services: Services): void {
     withResult(DropUserSchema, ({ connectionId, db, username }) =>
       users.dropUser(connectionId, db, username)
     )
+  )
+
+  ipcMain.handle(
+    Channels.UpdaterCheck,
+    withoutInput(() => updater.check())
+  )
+
+  // Resolves only once the download has finished; progress arrives on
+  // updater:progress.
+  ipcMain.handle(
+    Channels.UpdaterDownload,
+    withoutInput(() => updater.download())
+  )
+
+  ipcMain.handle(
+    Channels.UpdaterInstall,
+    withoutInput(async () => {
+      updater.install()
+    })
   )
 }

@@ -112,7 +112,7 @@ jobs:
 
       # `--publish always` uploads the installer + latest.yml /
       # latest-linux.yml metadata to the GitHub Release matching the tag.
-      # electron-updater reads latest.yml at runtime to detect new versions.
+      # The in-app update check reads latest.yml to detect new versions.
       - name: Build and publish
         run: npm run dist:${{ matrix.target }} -- --publish always
         env:

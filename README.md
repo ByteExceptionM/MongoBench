@@ -19,7 +19,7 @@ A modern, dark-mode-first MongoDB GUI. Built as a daily-driver alternative to Mo
 - **Mongo shell syntax everywhere.** Type `ObjectId("…")`, `ISODate("…")`, `UUID("…")`, `NumberLong("…")` etc. directly in filters and editors — MongoBench parses it into canonical EJSON before sending.
 - **Optimistic concurrency on writes.** Every edit and delete includes a sha-256 hash precondition of the document; concurrent edits surface as conflicts instead of silently overwriting.
 - **Built-in observability.** Per-connection dashboard with op rate, read/write/command latency, connection pool state, cache fill, network throughput, and a per-database storage breakdown.
-- **Auto-update on Windows and Linux** via `electron-updater`, pulling directly from this repo's GitHub Releases.
+- **Updates you decide on.** MongoBench tells you when a newer release exists and shows the download progress, but nothing is fetched or installed until you click. Builds are unsigned — the app never replaces its own binary behind your back.
 
 ## Screenshots
 
@@ -201,9 +201,13 @@ Per-connection live view, sampled every 5 s, sliding 5-min history:
 
 Builds are **unsigned**. On first launch on Windows you'll see SmartScreen — click "More info → Run anyway".
 
-### Auto-update
+### Updates
 
-Installed builds check GitHub Releases at startup via `electron-updater`. New versions are downloaded in the background and applied on quit — no prompts, no clicks. AppImage updates self-replace; the Arch package updates via `pacman`.
+Installed builds ask GitHub Releases once at startup whether a newer version exists. If there is one, a notification appears in the corner — the further behind you are, the louder it is, and a missed major version is flagged in red.
+
+Nothing happens until you act on it. **Install update** starts the download and shows its progress; **Restart now** hands off to the installer, or you can ignore it and the update is applied the next time you start MongoBench. Since these builds are unsigned, an app that swaps out its own binary unprompted is not something we're willing to ship — and an installer running silently while you work will close the app mid-session to replace its files.
+
+The Arch package ships without an update feed and is updated through the AUR like any other package.
 
 ## Develop
 
@@ -239,13 +243,13 @@ src/
 
 ### Stack
 
-- **Electron 32** + **TypeScript** strict
+- **Electron 42** + **TypeScript** strict
 - **electron-vite** — separate main / preload / renderer Vite configs
 - **React 18** + **Zustand** + **TanStack Query**
 - **Tailwind CSS v3** + **shadcn/ui** (Radix primitives)
 - **Monaco** editor with custom `mongobench-dark` theme
 - **mongodb** Node driver v7 + **bson** v7 (canonical / relaxed EJSON)
-- **electron-builder** for packaging, **electron-updater** for self-update
+- **electron-builder** for packaging, **electron-updater** driving the user-initiated update flow
 - **Vitest** for unit tests
 
 ## Compatibility
