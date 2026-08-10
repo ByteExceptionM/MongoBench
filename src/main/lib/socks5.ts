@@ -12,7 +12,7 @@
  * remote network.
  */
 
-import { createHash, timingSafeEqual } from 'node:crypto'
+import { timingSafeEqual } from 'node:crypto'
 import { createServer, type Socket } from 'node:net'
 import type { Duplex } from 'node:stream'
 
@@ -99,11 +99,14 @@ function readBytes(socket: Socket, need: number): Promise<Buffer> {
   })
 }
 
-/** Constant-time compare that tolerates differing lengths. */
+/**
+ * Constant-time compare. timingSafeEqual throws on a length mismatch, so the
+ * length is checked first — which reveals nothing, since both credentials are
+ * fixed-length random hex the caller generated itself.
+ */
 function secretMatches(received: Buffer, expected: string): boolean {
-  const a = createHash('sha256').update(received).digest()
-  const b = createHash('sha256').update(expected, 'utf8').digest()
-  return timingSafeEqual(a, b)
+  const want = Buffer.from(expected, 'utf8')
+  return received.length === want.length && timingSafeEqual(received, want)
 }
 
 async function readAddress(socket: Socket, addressType: number): Promise<string> {

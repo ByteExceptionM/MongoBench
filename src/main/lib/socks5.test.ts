@@ -107,6 +107,29 @@ describe('createSocks5Server', () => {
     expect(requested).toEqual([])
   })
 
+  it('rejects a credential of the right length but the wrong content', async () => {
+    const requested: Requested[] = []
+    const proxy = await startProxy(requested)
+    // Same length as PASSWORD, differing in one character — the length check
+    // cannot catch this, so it proves the byte comparison does the work.
+    expect('proxy-pasS'.length).toBe(PASSWORD.length)
+    await expect(
+      connectThrough(
+        proxy.port,
+        { host: 'mongo1.internal', port: 27017 },
+        { userId: USERNAME, password: 'proxy-pasS' }
+      )
+    ).rejects.toThrow()
+    await expect(
+      connectThrough(
+        proxy.port,
+        { host: 'mongo1.internal', port: 27017 },
+        { userId: 'proxy-useR', password: PASSWORD }
+      )
+    ).rejects.toThrow()
+    expect(requested).toEqual([])
+  })
+
   it('rejects a client that only offers no-auth', async () => {
     const requested: Requested[] = []
     const proxy = await startProxy(requested)
