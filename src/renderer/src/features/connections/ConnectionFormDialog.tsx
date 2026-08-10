@@ -1,7 +1,15 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { CheckCircle2, ChevronDown, ChevronRight, Loader2, XCircle } from 'lucide-react'
+import {
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  FolderOpen,
+  Loader2,
+  ShieldQuestion,
+  XCircle
+} from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -25,14 +33,29 @@ import { TimezoneSelect } from './TimezoneSelect'
 import { api, ApiError } from '@/lib/api'
 import { queryKeys } from '@/lib/queryClient'
 import { cn } from '@/lib/utils'
-import type {
-  AuthMechanism,
-  ConnectionConfig,
-  ConnectionInput,
-  ConnectionTestResult,
-  ReadPreference,
-  UuidEncoding
+import {
+  DEFAULT_SSH_PORT,
+  type AuthMechanism,
+  type ConnectionConfig,
+  type ConnectionInput,
+  type ConnectionTestResult,
+  type ReadPreference,
+  type SshAuthMethod,
+  type SshTunnelInput,
+  type UuidEncoding
 } from '@shared/types'
+
+type SshFormState = {
+  enabled: boolean
+  host: string
+  /** Text, like the other numeric inputs in this form. */
+  port: string
+  username: string
+  authMethod: SshAuthMethod
+  privateKeyPath: string
+  password: string
+  passphrase: string
+}
 
 type FormState = {
   name: string
@@ -56,7 +79,19 @@ type FormState = {
   socketTimeoutMS: string
   retryWrites: 'default' | 'on' | 'off'
   retryReads: 'default' | 'on' | 'off'
+  ssh: SshFormState
 }
+
+const emptySsh = (): SshFormState => ({
+  enabled: false,
+  host: '',
+  port: String(DEFAULT_SSH_PORT),
+  username: '',
+  authMethod: 'privateKey',
+  privateKeyPath: '',
+  password: '',
+  passphrase: ''
+})
 
 const emptyForm = (): FormState => ({
   name: '',
@@ -79,7 +114,8 @@ const emptyForm = (): FormState => ({
   connectTimeoutMS: '',
   socketTimeoutMS: '',
   retryWrites: 'default',
-  retryReads: 'default'
+  retryReads: 'default',
+  ssh: emptySsh()
 })
 
 const fromConnection = (conn: ConnectionConfig): FormState => ({
@@ -103,13 +139,53 @@ const fromConnection = (conn: ConnectionConfig): FormState => ({
   connectTimeoutMS: conn.connectTimeoutMS !== undefined ? String(conn.connectTimeoutMS) : '',
   socketTimeoutMS: conn.socketTimeoutMS !== undefined ? String(conn.socketTimeoutMS) : '',
   retryWrites: conn.retryWrites === undefined ? 'default' : conn.retryWrites ? 'on' : 'off',
-  retryReads: conn.retryReads === undefined ? 'default' : conn.retryReads ? 'on' : 'off'
+  retryReads: conn.retryReads === undefined ? 'default' : conn.retryReads ? 'on' : 'off',
+  ssh:
+    conn.ssh === undefined
+      ? emptySsh()
+      : {
+          enabled: conn.ssh.enabled,
+          host: conn.ssh.host,
+          port: String(conn.ssh.port ?? DEFAULT_SSH_PORT),
+          username: conn.ssh.username,
+          authMethod: conn.ssh.authMethod,
+          privateKeyPath: conn.ssh.privateKeyPath ?? '',
+          // Secrets never come back from main; blank means "keep".
+          password: '',
+          passphrase: ''
+        }
 })
 
 const parseInt = (raw: string): number | undefined => {
   if (raw.trim().length === 0) return undefined
   const n = Number.parseInt(raw, 10)
   return Number.isFinite(n) && n > 0 ? n : undefined
+}
+
+/**
+ * Undefined when the section is off and untouched, so connections that never
+ * needed a tunnel do not grow an empty `ssh` block. A disabled-but-filled
+ * section is still sent, so switching the tunnel off keeps its settings for
+ * the next time it is switched on.
+ */
+function buildSshInput(ssh: SshFormState): SshTunnelInput | undefined {
+  const host = ssh.host.trim()
+  const username = ssh.username.trim()
+  const privateKeyPath = ssh.privateKeyPath.trim()
+  const touched = host.length > 0 || username.length > 0 || privateKeyPath.length > 0
+  if (!ssh.enabled && !touched) return undefined
+
+  const port = parseInt(ssh.port)
+  return {
+    enabled: ssh.enabled,
+    host,
+    ...(port !== undefined ? { port } : {}),
+    username,
+    authMethod: ssh.authMethod,
+    ...(privateKeyPath.length > 0 ? { privateKeyPath } : {}),
+    ...(ssh.password.length > 0 ? { password: ssh.password } : {}),
+    ...(ssh.passphrase.length > 0 ? { passphrase: ssh.passphrase } : {})
+  }
 }
 
 function buildInput(form: FormState): ConnectionInput {
@@ -143,6 +219,8 @@ function buildInput(form: FormState): ConnectionInput {
   if (st !== undefined) input.socketTimeoutMS = st
   if (form.retryWrites !== 'default') input.retryWrites = form.retryWrites === 'on'
   if (form.retryReads !== 'default') input.retryReads = form.retryReads === 'on'
+  const ssh = buildSshInput(form.ssh)
+  if (ssh !== undefined) input.ssh = ssh
   return input
 }
 
@@ -175,6 +253,13 @@ export function ConnectionFormDialog({ open, onOpenChange, connection }: Props) 
     if (input.uri.length === 0) return 'URI is required'
     if (!input.uri.startsWith('mongodb://') && !input.uri.startsWith('mongodb+srv://')) {
       return 'URI must start with mongodb:// or mongodb+srv://'
+    }
+    if (input.ssh?.enabled === true) {
+      if (input.ssh.host.length === 0) return 'SSH host is required'
+      if (input.ssh.username.length === 0) return 'SSH username is required'
+      if (input.ssh.authMethod === 'privateKey' && input.ssh.privateKeyPath === undefined) {
+        return 'Private key file is required'
+      }
     }
     return null
   }, [input])
@@ -211,6 +296,9 @@ export function ConnectionFormDialog({ open, onOpenChange, connection }: Props) 
 
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((prev) => ({ ...prev, [key]: value }))
+
+  const updateSsh = (patch: Partial<SshFormState>) =>
+    setForm((prev) => ({ ...prev, ssh: { ...prev.ssh, ...patch } }))
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -276,6 +364,24 @@ export function ConnectionFormDialog({ open, onOpenChange, connection }: Props) 
                 placeholder={isEdit && connection?.hasStoredPassword ? '••••••••' : 'optional'}
               />
             </Field>
+          </div>
+
+          <div className="grid gap-3">
+            <ToggleRow
+              id="conn-ssh"
+              label="Connect through an SSH tunnel"
+              hint="Reach hosts that are only routable from an SSH server — including every member of a replica set."
+              checked={form.ssh.enabled}
+              onCheckedChange={(v) => updateSsh({ enabled: v })}
+            />
+            {form.ssh.enabled && (
+              <SshTunnelFields
+                value={form.ssh}
+                onChange={updateSsh}
+                hasStoredPassword={connection?.ssh?.hasStoredPassword ?? false}
+                hasStoredPassphrase={connection?.ssh?.hasStoredPassphrase ?? false}
+              />
+            )}
           </div>
 
           <button
@@ -545,6 +651,161 @@ export function ConnectionFormDialog({ open, onOpenChange, connection }: Props) 
   )
 }
 
+function SshTunnelFields({
+  value,
+  onChange,
+  hasStoredPassword,
+  hasStoredPassphrase
+}: {
+  value: SshFormState
+  onChange: (patch: Partial<SshFormState>) => void
+  hasStoredPassword: boolean
+  hasStoredPassphrase: boolean
+}) {
+  const [picking, setPicking] = useState(false)
+
+  const pickKey = async () => {
+    setPicking(true)
+    try {
+      const path = await api.dialog.pickPrivateKey()
+      if (path !== null) onChange({ privateKeyPath: path })
+    } catch (error: unknown) {
+      toast.error(error instanceof ApiError ? error.message : String(error))
+    } finally {
+      setPicking(false)
+    }
+  }
+
+  return (
+    <div className="grid gap-3 rounded-md border bg-card/40 p-4">
+      <div className="grid grid-cols-[2fr_1fr] gap-3">
+        <Field label="SSH host" htmlFor="ssh-host">
+          <Input
+            id="ssh-host"
+            placeholder="gateway.example.com"
+            value={value.host}
+            onChange={(e) => onChange({ host: e.target.value })}
+            spellCheck={false}
+          />
+        </Field>
+        <Field label="SSH port" htmlFor="ssh-port">
+          <Input
+            id="ssh-port"
+            type="number"
+            min={1}
+            max={65535}
+            placeholder={String(DEFAULT_SSH_PORT)}
+            value={value.port}
+            onChange={(e) => onChange({ port: e.target.value })}
+          />
+        </Field>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="SSH username" htmlFor="ssh-username">
+          <Input
+            id="ssh-username"
+            value={value.username}
+            onChange={(e) => onChange({ username: e.target.value })}
+            autoComplete="off"
+            spellCheck={false}
+          />
+        </Field>
+        <Field label="Authentication" htmlFor="ssh-auth">
+          <Select
+            value={value.authMethod}
+            onValueChange={(v) => onChange({ authMethod: v as SshAuthMethod })}
+          >
+            <SelectTrigger id="ssh-auth">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="privateKey">Private key</SelectItem>
+              <SelectItem value="password">Password</SelectItem>
+              <SelectItem value="agent">SSH agent</SelectItem>
+            </SelectContent>
+          </Select>
+        </Field>
+      </div>
+
+      {value.authMethod === 'privateKey' && (
+        <>
+          <Field
+            label="Private key file"
+            htmlFor="ssh-key"
+            hint="Only the path is saved — the key is read when connecting and never leaves the main process."
+          >
+            <div className="flex gap-2">
+              <Input
+                id="ssh-key"
+                placeholder="C:\Users\you\.ssh\id_ed25519"
+                value={value.privateKeyPath}
+                onChange={(e) => onChange({ privateKeyPath: e.target.value })}
+                spellCheck={false}
+                className="font-mono text-xs"
+              />
+              <Button type="button" variant="outline" onClick={() => void pickKey()}>
+                {picking ? <Loader2 className="animate-spin" /> : <FolderOpen />}
+                Browse
+              </Button>
+            </div>
+          </Field>
+          <Field
+            label={hasStoredPassphrase ? 'Key passphrase (saved)' : 'Key passphrase'}
+            htmlFor="ssh-passphrase"
+            hint={
+              hasStoredPassphrase
+                ? 'Leave blank to keep the saved passphrase.'
+                : 'Leave blank if the key is not encrypted.'
+            }
+          >
+            <Input
+              id="ssh-passphrase"
+              type="password"
+              value={value.passphrase}
+              onChange={(e) => onChange({ passphrase: e.target.value })}
+              autoComplete="new-password"
+              placeholder={hasStoredPassphrase ? '••••••••' : 'optional'}
+            />
+          </Field>
+        </>
+      )}
+
+      {value.authMethod === 'password' && (
+        <Field
+          label={hasStoredPassword ? 'SSH password (saved)' : 'SSH password'}
+          htmlFor="ssh-password"
+          hint={hasStoredPassword ? 'Leave blank to keep the saved password.' : undefined}
+        >
+          <Input
+            id="ssh-password"
+            type="password"
+            value={value.password}
+            onChange={(e) => onChange({ password: e.target.value })}
+            autoComplete="new-password"
+            placeholder={hasStoredPassword ? '••••••••' : ''}
+          />
+        </Field>
+      )}
+
+      {value.authMethod === 'agent' && (
+        <p className="text-[10px] leading-snug text-muted-foreground">
+          Uses the agent this machine already runs — <code>SSH_AUTH_SOCK</code>, or the OpenSSH
+          named pipe on Windows. No key or password is stored by MongoBench.
+        </p>
+      )}
+
+      <p className="rounded-md border border-border/60 bg-background/40 px-3 py-2 text-[10px] leading-relaxed text-muted-foreground">
+        Every connection the driver opens is routed through the tunnel, so the connection string
+        above must name the hosts{' '}
+        <span className="text-foreground">as the SSH server sees them</span> — list all replica-set
+        members and let it resolve them. <code>mongodb+srv://</code> is the exception: its DNS
+        lookup still happens locally.
+      </p>
+    </div>
+  )
+}
+
 function Field({
   label,
   htmlFor,
@@ -618,35 +879,51 @@ function TestStatus({
 }) {
   if (!pending && !result && !error) return null
   return (
-    <div
-      className={cn(
-        'flex items-start gap-3 rounded-md border p-3 text-sm',
-        result?.ok && 'border-success/30 bg-success/5 text-success',
-        error !== null && 'border-destructive/30 bg-destructive/5 text-destructive',
-        pending && 'border-border bg-card text-muted-foreground'
-      )}
-    >
-      {pending && <Loader2 className="mt-0.5 h-4 w-4 animate-spin" />}
-      {result?.ok && <CheckCircle2 className="mt-0.5 h-4 w-4" />}
-      {error !== null && <XCircle className="mt-0.5 h-4 w-4" />}
-      <div className="flex-1">
-        {pending && 'Probing server…'}
-        {result?.ok && (
-          <>
-            <div className="font-medium">Connected</div>
-            <div className="text-xs opacity-80">
-              {result.serverVersion ? `MongoDB ${result.serverVersion} · ` : ''}
-              {result.latencyMs} ms latency
-            </div>
-          </>
+    <div className="grid gap-2">
+      <div
+        className={cn(
+          'flex items-start gap-3 rounded-md border p-3 text-sm',
+          result?.ok && 'border-success/30 bg-success/5 text-success',
+          error !== null && 'border-destructive/30 bg-destructive/5 text-destructive',
+          pending && 'border-border bg-card text-muted-foreground'
         )}
-        {error !== null && (
-          <>
-            <div className="font-medium">Connection failed</div>
-            <div className="text-xs opacity-80">{error}</div>
-          </>
-        )}
+      >
+        {pending && <Loader2 className="mt-0.5 h-4 w-4 animate-spin" />}
+        {result?.ok && <CheckCircle2 className="mt-0.5 h-4 w-4" />}
+        {error !== null && <XCircle className="mt-0.5 h-4 w-4" />}
+        <div className="flex-1">
+          {pending && 'Probing server…'}
+          {result?.ok && (
+            <>
+              <div className="font-medium">Connected</div>
+              <div className="text-xs opacity-80">
+                {result.serverVersion ? `MongoDB ${result.serverVersion} · ` : ''}
+                {result.latencyMs} ms latency
+              </div>
+            </>
+          )}
+          {error !== null && (
+            <>
+              <div className="font-medium">Connection failed</div>
+              <div className="text-xs opacity-80">{error}</div>
+            </>
+          )}
+        </div>
       </div>
+
+      {result?.pinnedHostKey && (
+        <div className="flex items-start gap-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-sm text-amber-600 dark:text-amber-400">
+          <ShieldQuestion className="mt-0.5 h-4 w-4 shrink-0" />
+          <div className="flex-1">
+            <div className="font-medium">New SSH host key pinned</div>
+            <div className="text-xs opacity-80">
+              MongoBench had never seen {result.pinnedHostKey.host} before and has remembered the
+              key it presented. Compare it against the server before you trust this connection:{' '}
+              <span className="font-mono">{result.pinnedHostKey.fingerprint}</span>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

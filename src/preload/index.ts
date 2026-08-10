@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { Api } from '@shared/api'
-import type { UpdateCheckResult, UpdateProgress } from '@shared/events'
+import type { ConnectionDropped, UpdateCheckResult, UpdateProgress } from '@shared/events'
 import type { Result } from '@shared/result'
 import type {
   AggregateRequest,
@@ -11,6 +11,7 @@ import type {
   ConnectionInput,
   ConnectionTestResult,
   ConnectionUpdatePayload,
+  ConnectResult,
   CountRequest,
   CountResponse,
   CreateIndexPayload,
@@ -62,9 +63,14 @@ const api: Api = {
     delete: (id: string) => invoke<void>('connections:delete', { id }),
     test: (input: ConnectionInput, existingId?: string) =>
       invoke<ConnectionTestResult>('connections:test', { input, existingId }),
-    connect: (id: string) => invoke<{ connectionId: string }>('connections:connect', { id }),
+    connect: (id: string) => invoke<ConnectResult>('connections:connect', { id }),
     disconnect: (connectionId: string) => invoke<void>('connections:disconnect', { connectionId }),
-    reorder: (ids: string[]) => invoke<void>('connections:reorder', { ids })
+    reorder: (ids: string[]) => invoke<void>('connections:reorder', { ids }),
+    onDropped: (listener: (payload: ConnectionDropped) => void) =>
+      subscribe<ConnectionDropped>('connections:dropped', listener)
+  },
+  dialog: {
+    pickPrivateKey: () => invoke<string | null>('dialog:pickPrivateKey')
   },
   databases: {
     list: (connectionId: string) => invoke<DatabaseInfo[]>('databases:list', { connectionId }),

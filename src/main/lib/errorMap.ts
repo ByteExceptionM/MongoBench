@@ -11,6 +11,21 @@ export function mapError(error: unknown): { code: ErrorCode; message: string; de
     const message = error.message
     const code = readCodeField(error)
 
+    // SSH failures come before the driver checks: when a tunnel cannot be
+    // opened the driver never runs, and reporting "server selection timed out"
+    // for a rejected SSH key would point at the wrong end of the problem.
+    if (name === 'SshHostKeyMismatchError') {
+      return { code: 'ssh_host_key_mismatch', message }
+    }
+
+    if (name === 'SshAuthError') {
+      return { code: 'ssh_auth_failed', message }
+    }
+
+    if (name === 'SshConnectError') {
+      return { code: 'ssh_connect_failed', message }
+    }
+
     if (name === 'MongoServerSelectionError') {
       return { code: 'server_selection_timeout', message }
     }

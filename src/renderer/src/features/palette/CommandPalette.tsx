@@ -10,6 +10,7 @@ import {
   CommandItem,
   CommandList
 } from '@/components/ui/command'
+import { notifyPinnedHostKey } from '@/features/connections/pinnedHostKeyToast'
 import { api } from '@/lib/api'
 import { queryKeys } from '@/lib/queryClient'
 import { useAppStore } from '@/store'
@@ -207,7 +208,7 @@ export function CommandPalette({ open, onOpenChange }: Props) {
                         closeForConnection(c.id)
                       } else {
                         try {
-                          await api.connections.connect(c.id)
+                          notifyPinnedHostKey(await api.connections.connect(c.id))
                           markConnected(c.id)
                         } catch {
                           // toast handled at row level on the sidebar

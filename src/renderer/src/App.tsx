@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { toast } from 'sonner'
 import { ConnectionsExplorer } from '@/features/explorer/ConnectionsExplorer'
 import { TabBar } from '@/features/tabs/TabBar'
 import { CollectionTab } from '@/features/collection/CollectionTab'
@@ -31,12 +32,24 @@ export default function App() {
   }, [])
 
   const activeIds = useAppStore((s) => s.activeConnectionIds)
+  const markDisconnected = useAppStore((s) => s.markDisconnected)
   const { data: connections } = useQuery({
     queryKey: queryKeys.connections,
     queryFn: () => api.connections.list()
   })
   const dashboardConnection = !activeTab ? connections?.find((c) => activeIds.has(c.id)) : undefined
   const onWelcome = !activeTab && !dashboardConnection
+
+  // Main took a connection down without being asked — today that means a dead
+  // SSH tunnel. Subscribed here because the sidebar is not always mounted.
+  // Open tabs are left alone: a drop is usually followed by a reconnect, and
+  // discarding the user's queries over a network hiccup would be worse.
+  useEffect(() => {
+    return api.connections.onDropped(({ connectionId, reason }) => {
+      markDisconnected(connectionId)
+      toast.error('Connection lost', { description: reason })
+    })
+  }, [markDisconnected])
 
   return (
     <div className="flex h-full w-full bg-background text-foreground">

@@ -1,4 +1,6 @@
-import { ipcMain, type IpcMainInvokeEvent } from 'electron'
+import { BrowserWindow, dialog, ipcMain, type IpcMainInvokeEvent } from 'electron'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import log from 'electron-log/main'
 import type { ZodType } from 'zod'
 import {
@@ -293,6 +295,27 @@ export function registerIpcHandlers(services: Services): void {
     Channels.UpdaterInstall,
     withoutInput(async () => {
       updater.install()
+    })
+  )
+
+  // Only the path travels back to the renderer; the key itself is read in
+  // main at connect time and never leaves it.
+  ipcMain.handle(
+    Channels.DialogPickPrivateKey,
+    withoutInput(async () => {
+      const options: Electron.OpenDialogOptions = {
+        title: 'Select an SSH private key',
+        defaultPath: join(homedir(), '.ssh'),
+        // Key files carry no extension, and .ssh is a hidden directory.
+        properties: ['openFile', 'showHiddenFiles', 'dontAddToRecent']
+      }
+      const parent = BrowserWindow.getFocusedWindow()
+      const result =
+        parent === null
+          ? await dialog.showOpenDialog(options)
+          : await dialog.showOpenDialog(parent, options)
+      if (result.canceled) return null
+      return result.filePaths[0] ?? null
     })
   )
 }
