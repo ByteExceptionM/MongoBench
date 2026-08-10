@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { Api } from '@shared/api'
+import type { ConnectionDropped, UpdateCheckResult, UpdateProgress } from '@shared/events'
 import type { Result } from '@shared/result'
 import type {
   AggregateRequest,
@@ -10,6 +11,7 @@ import type {
   ConnectionInput,
   ConnectionTestResult,
   ConnectionUpdatePayload,
+  ConnectResult,
   CountRequest,
   CountResponse,
   CreateIndexPayload,
@@ -39,6 +41,19 @@ import type {
 const invoke = <T>(channel: string, payload?: unknown): Promise<Result<T>> =>
   ipcRenderer.invoke(channel, payload) as Promise<Result<T>>
 
+/**
+ * Subscribes to a main → renderer push and returns an unsubscribe. The raw
+ * IpcRendererEvent is dropped — it carries `sender`, which would hand the
+ * renderer an Electron object and defeat contextIsolation.
+ */
+const subscribe = <T>(channel: string, listener: (payload: T) => void): (() => void) => {
+  const handler = (_event: unknown, payload: T): void => listener(payload)
+  ipcRenderer.on(channel, handler)
+  return () => {
+    ipcRenderer.removeListener(channel, handler)
+  }
+}
+
 const api: Api = {
   connections: {
     list: () => invoke<ConnectionConfig[]>('connections:list'),
@@ -48,9 +63,14 @@ const api: Api = {
     delete: (id: string) => invoke<void>('connections:delete', { id }),
     test: (input: ConnectionInput, existingId?: string) =>
       invoke<ConnectionTestResult>('connections:test', { input, existingId }),
-    connect: (id: string) => invoke<{ connectionId: string }>('connections:connect', { id }),
+    connect: (id: string) => invoke<ConnectResult>('connections:connect', { id }),
     disconnect: (connectionId: string) => invoke<void>('connections:disconnect', { connectionId }),
-    reorder: (ids: string[]) => invoke<void>('connections:reorder', { ids })
+    reorder: (ids: string[]) => invoke<void>('connections:reorder', { ids }),
+    onDropped: (listener: (payload: ConnectionDropped) => void) =>
+      subscribe<ConnectionDropped>('connections:dropped', listener)
+  },
+  dialog: {
+    pickPrivateKey: () => invoke<string | null>('dialog:pickPrivateKey')
   },
   databases: {
     list: (connectionId: string) => invoke<DatabaseInfo[]>('databases:list', { connectionId }),
@@ -97,6 +117,13 @@ const api: Api = {
       invoke<IndexInfo[]>('indexes:list', payload),
     create: (payload: CreateIndexPayload) => invoke<{ name: string }>('indexes:create', payload),
     drop: (payload: DropIndexPayload) => invoke<void>('indexes:drop', payload)
+  },
+  updater: {
+    check: () => invoke<UpdateCheckResult>('updater:check'),
+    download: () => invoke<void>('updater:download'),
+    install: () => invoke<void>('updater:install'),
+    onProgress: (listener: (progress: UpdateProgress) => void) =>
+      subscribe<UpdateProgress>('updater:progress', listener)
   }
 }
 

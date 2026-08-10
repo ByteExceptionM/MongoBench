@@ -1,40 +1,63 @@
 import { app } from 'electron'
 import log from 'electron-log/main'
 import { autoUpdater } from 'electron-updater'
+import type { UpdateCheckResult, UpdateProgress } from '@shared/events'
+import { updateSeverity } from '../lib/updateSeverity'
 
-// electron-updater needs a real packaged app + a published `latest.yml`
-// on GitHub Releases to do anything. In dev it would require a
-// `dev-app-update.yml`; we just skip instead.
-export function initAutoUpdater(): void {
-  if (!app.isPackaged) {
-    log.info('Updater: dev mode, skipping')
-    return
+/**
+ * User-driven update flow. Builds are unsigned, and a silent installer
+ * terminates the running app mid-session to replace its binary — so nothing
+ * here happens without a click.
+ *
+ * electron-updater needs a packaged app plus a published `latest.yml`; in dev
+ * there is neither, so every method is a no-op.
+ */
+export class UpdaterService {
+  private downloading = false
+
+  constructor(private readonly emitProgress: (progress: UpdateProgress) => void) {
+    autoUpdater.logger = log
+    autoUpdater.autoDownload = false
+    autoUpdater.autoInstallOnAppQuit = false
+
+    autoUpdater.on('download-progress', (p) => {
+      this.emitProgress({ percent: Math.min(100, Math.max(0, Math.round(p.percent))) })
+    })
+    autoUpdater.on('error', (error) => {
+      log.error('Updater error', error)
+    })
   }
 
-  autoUpdater.logger = log
-  autoUpdater.autoDownload = true
-  autoUpdater.autoInstallOnAppQuit = true
+  async check(): Promise<UpdateCheckResult> {
+    if (!app.isPackaged) return { available: false }
 
-  autoUpdater.on('checking-for-update', () => {
-    log.info('Updater: checking for update')
-  })
-  autoUpdater.on('update-available', (info) => {
-    log.info(`Updater: update available — ${info.version}`)
-  })
-  autoUpdater.on('update-not-available', () => {
-    log.info('Updater: up to date')
-  })
-  autoUpdater.on('download-progress', (p) => {
-    log.info(`Updater: downloading ${Math.round(p.percent)}%`)
-  })
-  autoUpdater.on('update-downloaded', (info) => {
-    log.info(`Updater: downloaded ${info.version} — will install on quit`)
-  })
-  autoUpdater.on('error', (err) => {
-    log.error('Updater error', err)
-  })
+    const result = await autoUpdater.checkForUpdates()
+    const latest = result?.updateInfo.version
+    if (latest === undefined) return { available: false }
 
-  void autoUpdater.checkForUpdates().catch((err) => {
-    log.error('Updater: initial check failed', err)
-  })
+    const current = app.getVersion()
+    const severity = updateSeverity(current, latest)
+    if (severity === null) {
+      log.info(`Updater: up to date (${current})`)
+      return { available: false }
+    }
+
+    log.info(`Updater: ${latest} available (${severity}), current ${current}`)
+    return { available: true, version: latest, currentVersion: current, severity }
+  }
+
+  async download(): Promise<void> {
+    if (!app.isPackaged || this.downloading) return
+    this.downloading = true
+    try {
+      await autoUpdater.downloadUpdate()
+    } finally {
+      this.downloading = false
+    }
+  }
+
+  install(): void {
+    if (!app.isPackaged) return
+    autoUpdater.quitAndInstall()
+  }
 }

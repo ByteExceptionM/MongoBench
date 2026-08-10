@@ -1,3 +1,4 @@
+import type { ConnectionDropped, UpdateCheckResult, UpdateProgress } from '@shared/events'
 import type { ApiErrorPayload, ErrorCode, Result } from '@shared/result'
 import type {
   AggregateRequest,
@@ -8,6 +9,7 @@ import type {
   ConnectionInput,
   ConnectionTestResult,
   ConnectionUpdatePayload,
+  ConnectResult,
   CountRequest,
   CountResponse,
   CreateIndexPayload,
@@ -61,11 +63,12 @@ export const api = {
     delete: (id: string): Promise<void> => unwrap(window.api.connections.delete(id)),
     test: (input: ConnectionInput, existingId?: string): Promise<ConnectionTestResult> =>
       unwrap(window.api.connections.test(input, existingId)),
-    connect: (id: string): Promise<{ connectionId: string }> =>
-      unwrap(window.api.connections.connect(id)),
+    connect: (id: string): Promise<ConnectResult> => unwrap(window.api.connections.connect(id)),
     disconnect: (connectionId: string): Promise<void> =>
       unwrap(window.api.connections.disconnect(connectionId)),
-    reorder: (ids: string[]): Promise<void> => unwrap(window.api.connections.reorder(ids))
+    reorder: (ids: string[]): Promise<void> => unwrap(window.api.connections.reorder(ids)),
+    onDropped: (listener: (payload: ConnectionDropped) => void): (() => void) =>
+      window.api.connections.onDropped(listener)
   },
   databases: {
     list: (connectionId: string): Promise<DatabaseInfo[]> =>
@@ -124,5 +127,16 @@ export const api = {
     create: (payload: CreateIndexPayload): Promise<{ name: string }> =>
       unwrap(window.api.indexes.create(payload)),
     drop: (payload: DropIndexPayload): Promise<void> => unwrap(window.api.indexes.drop(payload))
+  },
+  dialog: {
+    pickPrivateKey: (): Promise<string | null> => unwrap(window.api.dialog.pickPrivateKey())
+  },
+  updater: {
+    check: (): Promise<UpdateCheckResult> => unwrap(window.api.updater.check()),
+    download: (): Promise<void> => unwrap(window.api.updater.download()),
+    install: (): Promise<void> => unwrap(window.api.updater.install()),
+    // A push subscription — no Result to unwrap.
+    onProgress: (listener: (progress: UpdateProgress) => void): (() => void) =>
+      window.api.updater.onProgress(listener)
   }
 }

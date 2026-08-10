@@ -9,6 +9,41 @@ const ReadPreferenceSchema = z.enum([
   'nearest'
 ])
 const UuidEncodingSchema = z.enum(['default', 'java'])
+const SshAuthMethodSchema = z.enum(['password', 'privateKey', 'agent'])
+
+/**
+ * Fields stay permissive while `enabled` is false so a half-filled tunnel
+ * section can still be saved with the tunnel switched off. Everything the
+ * tunnel actually needs is only required once it is on.
+ */
+export const SshTunnelInputSchema = z
+  .object({
+    enabled: z.boolean(),
+    host: z.string().trim().max(255),
+    port: z.number().int().min(1).max(65_535).optional(),
+    username: z.string().trim().max(255),
+    authMethod: SshAuthMethodSchema,
+    privateKeyPath: z.string().trim().max(4096).optional(),
+    password: z.string().max(1024).optional(),
+    passphrase: z.string().max(1024).optional()
+  })
+  .strict()
+  .superRefine((ssh, ctx) => {
+    if (!ssh.enabled) return
+    if (ssh.host.length === 0) {
+      ctx.addIssue({ code: 'custom', message: 'SSH host is required', path: ['host'] })
+    }
+    if (ssh.username.length === 0) {
+      ctx.addIssue({ code: 'custom', message: 'SSH username is required', path: ['username'] })
+    }
+    if (ssh.authMethod === 'privateKey' && (ssh.privateKeyPath ?? '').length === 0) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Private key file is required',
+        path: ['privateKeyPath']
+      })
+    }
+  })
 
 export const ConnectionInputSchema = z
   .object({
@@ -29,6 +64,7 @@ export const ConnectionInputSchema = z
     tls: z.boolean().optional(),
     serverSelectionTimeoutMS: z.number().int().min(1000).max(60_000).optional(),
     appName: z.string().trim().max(120).optional(),
+    ssh: SshTunnelInputSchema.optional(),
     directConnection: z.boolean().optional(),
     replicaSet: z.string().trim().max(120).optional(),
     readPreference: ReadPreferenceSchema.optional(),

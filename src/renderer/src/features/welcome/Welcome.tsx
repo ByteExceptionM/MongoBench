@@ -15,6 +15,7 @@ import {
 import iconUrl from '@icon.png'
 import { Button } from '@/components/ui/button'
 import { ConnectionFormDialog } from '@/features/connections/ConnectionFormDialog'
+import { notifyPinnedHostKey } from '@/features/connections/pinnedHostKeyToast'
 import { api, ApiError } from '@/lib/api'
 import { queryKeys } from '@/lib/queryClient'
 import { formatHostShort } from '@/lib/displayUri'
@@ -136,10 +137,11 @@ function ConnectionRow({
 
   const connectMutation = useMutation({
     mutationFn: () => api.connections.connect(connection.id),
-    onSuccess: () => {
+    onSuccess: (result) => {
       markConnected(connection.id)
       onAfterConnect()
       toast.success(`Connected to ${connection.name}`)
+      notifyPinnedHostKey(result)
     },
     onError: (e: unknown) => {
       const message = e instanceof ApiError ? e.message : String(e)

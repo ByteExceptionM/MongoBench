@@ -6,14 +6,17 @@ const APP_ICON = app.isPackaged
   ? join(process.resourcesPath, 'icon.png')
   : join(app.getAppPath(), 'build', 'icon.png')
 import log from 'electron-log/main'
+import { EventChannels } from './ipc/channels'
 import { registerIpcHandlers } from './ipc/router'
 import { ConnectionService } from './services/ConnectionService'
 import { DatabaseService } from './services/DatabaseService'
 import { IndexService } from './services/IndexService'
 import { QueryService } from './services/QueryService'
-import { initAutoUpdater } from './services/UpdaterService'
+import { SshTunnelService } from './services/SshTunnelService'
+import { UpdaterService } from './services/UpdaterService'
 import { UserService } from './services/UserService'
 import { ConnectionsRepository } from './stores/ConnectionsRepository'
+import { HostKeysStore } from './stores/HostKeysStore'
 import { SecretsStore } from './stores/SecretsStore'
 
 log.initialize()
@@ -27,6 +30,15 @@ if (process.platform === 'win32') app.setAppUserModelId('io.masel.mongobench')
 const services = {
   repo: null as ConnectionsRepository | null,
   connections: null as ConnectionService | null
+}
+
+// Held module-wide so main can push to the renderer outside of a request.
+let mainWindow: BrowserWindow | null = null
+
+function pushToRenderer(channel: string, payload: unknown): void {
+  if (mainWindow !== null && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(channel, payload)
+  }
 }
 
 function createWindow(): void {
@@ -48,8 +60,14 @@ function createWindow(): void {
     }
   })
 
+  mainWindow = window
+
   window.once('ready-to-show', () => {
     window.show()
+  })
+
+  window.on('closed', () => {
+    if (mainWindow === window) mainWindow = null
   })
 
   window.webContents.setWindowOpenHandler(({ url }) => {
@@ -95,15 +113,21 @@ function createWindow(): void {
 app.whenReady().then(() => {
   const secrets = new SecretsStore()
   const repo = new ConnectionsRepository(secrets)
-  const connections = new ConnectionService(repo)
+  const tunnels = new SshTunnelService(new HostKeysStore())
+  const connections = new ConnectionService(repo, tunnels, (connectionId, reason) =>
+    pushToRenderer(EventChannels.ConnectionDropped, { connectionId, reason })
+  )
   const databases = new DatabaseService(connections)
   const queries = new QueryService(connections)
   const users = new UserService(connections)
   const indexes = new IndexService(connections)
+  const updater = new UpdaterService((progress) => {
+    pushToRenderer(EventChannels.UpdaterProgress, progress)
+  })
   services.repo = repo
   services.connections = connections
 
-  registerIpcHandlers({ repo, connections, databases, queries, users, indexes })
+  registerIpcHandlers({ repo, connections, databases, queries, users, indexes, updater })
 
   createWindow()
 
@@ -112,7 +136,6 @@ app.whenReady().then(() => {
   })
 
   log.info(`MongoBench ${app.getVersion()} ready`)
-  initAutoUpdater()
 })
 
 app.on('before-quit', async (event) => {

@@ -31,6 +31,58 @@ export type ReadPreference =
  */
 export type UuidEncoding = 'default' | 'java'
 
+export type SshAuthMethod = 'password' | 'privateKey' | 'agent'
+
+export const DEFAULT_SSH_PORT = 22
+
+/**
+ * Tunnel settings, in the same three shapes as the connection itself.
+ *
+ * Main puts a loopback SOCKS5 proxy in front of the SSH session and hands it
+ * to the driver, so every socket the driver opens — including the replica-set
+ * members it only learns about during topology discovery — goes through the
+ * tunnel and resolves on the SSH server. The URI therefore names the hosts as
+ * the SSH server sees them.
+ */
+export type SshTunnelInput = {
+  enabled: boolean
+  host: string
+  port?: number
+  username: string
+  authMethod: SshAuthMethod
+  /** Only the path is stored, never the key itself. */
+  privateKeyPath?: string
+  /** Cleartext only in-flight. Blank on edit = keep what is stored. */
+  password?: string
+  /** Cleartext only in-flight. Blank on edit = keep what is stored. */
+  passphrase?: string
+}
+
+/** On-disk shape — main process only. */
+export type StoredSshTunnel = {
+  enabled: boolean
+  host: string
+  port?: number
+  username: string
+  authMethod: SshAuthMethod
+  privateKeyPath?: string
+  /** Base64 of safeStorage.encryptString(cleartext). */
+  encryptedPassword?: string
+  encryptedPassphrase?: string
+}
+
+/** Renderer-facing view — never carries cleartext or ciphertext secrets. */
+export type SshTunnelView = {
+  enabled: boolean
+  host: string
+  port?: number
+  username: string
+  authMethod: SshAuthMethod
+  privateKeyPath?: string
+  hasStoredPassword: boolean
+  hasStoredPassphrase: boolean
+}
+
 export type AdvancedOptions = {
   directConnection?: boolean
   replicaSet?: string
@@ -61,6 +113,8 @@ export type StoredConnection = {
   /** Default 3000 ms. */
   serverSelectionTimeoutMS?: number
   appName?: string
+  /** Absent on connections that reach their hosts directly. */
+  ssh?: StoredSshTunnel
   // Advanced driver options
   directConnection?: boolean
   replicaSet?: string
@@ -96,6 +150,8 @@ export type ConnectionConfig = {
   /** Default 3000 ms. */
   serverSelectionTimeoutMS?: number
   appName?: string
+  /** Absent on connections that reach their hosts directly. */
+  ssh?: SshTunnelView
   directConnection?: boolean
   replicaSet?: string
   readPreference?: ReadPreference
@@ -132,6 +188,7 @@ export type ConnectionInput = {
   /** Default 3000 ms. */
   serverSelectionTimeoutMS?: number
   appName?: string
+  ssh?: SshTunnelInput
   directConnection?: boolean
   replicaSet?: string
   readPreference?: ReadPreference
@@ -152,11 +209,27 @@ export type ConnectionInput = {
   retryReads?: boolean
 }
 
+/**
+ * Reported when a host key was seen for the first time and pinned, so the user
+ * can check the fingerprint against the server before trusting the tunnel.
+ */
+export type PinnedHostKeyNotice = {
+  host: string
+  /** OpenSSH format, e.g. `SHA256:qGZ…`. */
+  fingerprint: string
+}
+
 export type ConnectionTestResult = {
   ok: boolean
   latencyMs: number
   serverVersion?: string
   message?: string
+  pinnedHostKey?: PinnedHostKeyNotice
+}
+
+export type ConnectResult = {
+  connectionId: string
+  pinnedHostKey?: PinnedHostKeyNotice
 }
 
 export type DatabaseInfo = {

@@ -1,13 +1,20 @@
 import { QueryClient } from '@tanstack/react-query'
+import type { ErrorCode } from '@shared/result'
 import { ApiError } from './api'
+
+/** Retrying these cannot change the answer — the input has to change first. */
+const NEVER_RETRIED = new Set<ErrorCode>([
+  'validation_error',
+  'auth_failed',
+  'ssh_auth_failed',
+  'ssh_host_key_mismatch'
+])
 
 export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       retry: (failureCount, error) => {
-        if (error instanceof ApiError) {
-          if (error.code === 'validation_error' || error.code === 'auth_failed') return false
-        }
+        if (error instanceof ApiError && NEVER_RETRIED.has(error.code)) return false
         return failureCount < 1
       },
       staleTime: 30_000,

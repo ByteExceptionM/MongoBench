@@ -39,7 +39,19 @@ export const Channels = {
   QueryInsertOne: 'query:insertOne',
   QueryInsertMany: 'query:insertMany',
   QueryDeleteOne: 'query:deleteOne',
-  QueryDeleteMany: 'query:deleteMany'
+  QueryDeleteMany: 'query:deleteMany',
+
+  UpdaterCheck: 'updater:check',
+  UpdaterDownload: 'updater:download',
+  UpdaterInstall: 'updater:install',
+
+  DialogPickPrivateKey: 'dialog:pickPrivateKey'
 } as const
 
 export type ChannelName = (typeof Channels)[keyof typeof Channels]
+
+/** main → renderer pushes. Subscribed to in the preload, never `handle`d. */
+export const EventChannels = {
+  UpdaterProgress: 'updater:progress',
+  ConnectionDropped: 'connections:dropped'
+} as const

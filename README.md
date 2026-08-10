@@ -15,11 +15,12 @@ A modern, dark-mode-first MongoDB GUI. Built as a daily-driver alternative to Mo
 ## Highlights
 
 - **Multiple connections, side-by-side.** Connect to as many clusters as you want; each runs an independent pool. Drag-reorder them in the sidebar, manage them with right-click context menus.
+- **Built-in SSH tunnelling.** Point a connection at a cluster that is only reachable from a jump host — key, password or agent auth, no external port forwards. Because the tunnel is a dynamic SOCKS5 proxy rather than a single forwarded port, the driver reaches **every replica-set member** it discovers, resolved on the SSH server's side.
 - **Three query modes per tab.** Switch a single tab between **Simple** (filter / projection / sort), **Aggregation** pipeline, and **Shell** (`db.coll.find().limit()` syntax) without losing state.
 - **Mongo shell syntax everywhere.** Type `ObjectId("…")`, `ISODate("…")`, `UUID("…")`, `NumberLong("…")` etc. directly in filters and editors — MongoBench parses it into canonical EJSON before sending.
 - **Optimistic concurrency on writes.** Every edit and delete includes a sha-256 hash precondition of the document; concurrent edits surface as conflicts instead of silently overwriting.
 - **Built-in observability.** Per-connection dashboard with op rate, read/write/command latency, connection pool state, cache fill, network throughput, and a per-database storage breakdown.
-- **Auto-update on Windows and Linux** via `electron-updater`, pulling directly from this repo's GitHub Releases.
+- **Updates you decide on.** MongoBench tells you when a newer release exists and shows the download progress, but nothing is fetched or installed until you click. Builds are unsigned — the app never replaces its own binary behind your back.
 
 ## Screenshots
 
@@ -31,7 +32,7 @@ Saved connections at a glance with quick-connect buttons and inline tips.
 
 ### Connection form
 
-Full driver-option surface — auth, topology, pool, timeouts, UUID encoding, display timezone.
+Full driver-option surface — auth, SSH tunnel, topology, pool, timeouts, UUID encoding, display timezone.
 
 ![New connection dialog](https://i.masel.io/ZIXO8/huKuWAvE28.png/raw)
 
@@ -93,6 +94,13 @@ Per-database user management. Common-role shortcuts plus arbitrary custom roles.
 - Multiple **active connections** simultaneously, each with its own pool
 - **Encrypted password storage** via OS keystore (Windows DPAPI, libsecret on Linux)
 - **Test before save** — probes server, reports MongoDB version + ping latency
+- **SSH tunnel** per connection, for hosts that are only routable from an SSH server:
+  - Auth via **private key** (+ passphrase), **password**, or the running **SSH agent**
+  - Key files are referenced by path — the key is read at connect time and never stored or copied
+  - Passwords and passphrases go into the same OS keystore as the MongoDB password
+  - Host keys are checked against your `~/.ssh/known_hosts`; an unknown host is pinned on first use and its `SHA256:` fingerprint surfaced for you to verify. A key that later changes is a hard failure
+  - Implemented as a loopback SOCKS5 proxy over the SSH session (with per-tunnel random credentials), handed to the driver as `proxyHost` / `proxyPort` — so **topology discovery works**: list every replica-set member in the URI under the names the SSH server resolves. `mongodb+srv://` is the exception, as its DNS lookup still happens locally
+  - A tunnel that dies takes its connection down and says so, instead of leaving a connection that only looks alive
 - **Drag-to-reorder** saved connections in the sidebar
 - **Right-click context menu** per connection: connect / disconnect, edit, delete, new database, refresh, copy URI
 - Full driver option surface, persisted per connection:
@@ -201,9 +209,13 @@ Per-connection live view, sampled every 5 s, sliding 5-min history:
 
 Builds are **unsigned**. On first launch on Windows you'll see SmartScreen — click "More info → Run anyway".
 
-### Auto-update
+### Updates
 
-Installed builds check GitHub Releases at startup via `electron-updater`. New versions are downloaded in the background and applied on quit — no prompts, no clicks. AppImage updates self-replace; the Arch package updates via `pacman`.
+Installed builds ask GitHub Releases once at startup whether a newer version exists. If there is one, a notification appears in the corner — the further behind you are, the louder it is, and a missed major version is flagged in red.
+
+Nothing happens until you act on it. **Install update** starts the download and shows its progress; **Restart now** hands off to the installer, or you can ignore it and the update is applied the next time you start MongoBench. Since these builds are unsigned, an app that swaps out its own binary unprompted is not something we're willing to ship — and an installer running silently while you work will close the app mid-session to replace its files.
+
+The Arch package ships without an update feed and is updated through the AUR like any other package.
 
 ## Develop
 
@@ -239,13 +251,13 @@ src/
 
 ### Stack
 
-- **Electron 32** + **TypeScript** strict
+- **Electron 42** + **TypeScript** strict
 - **electron-vite** — separate main / preload / renderer Vite configs
 - **React 18** + **Zustand** + **TanStack Query**
 - **Tailwind CSS v3** + **shadcn/ui** (Radix primitives)
 - **Monaco** editor with custom `mongobench-dark` theme
 - **mongodb** Node driver v7 + **bson** v7 (canonical / relaxed EJSON)
-- **electron-builder** for packaging, **electron-updater** for self-update
+- **electron-builder** for packaging, **electron-updater** driving the user-initiated update flow
 - **Vitest** for unit tests
 
 ## Compatibility
