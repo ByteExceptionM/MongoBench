@@ -16,6 +16,8 @@ import type {
   CreateUserPayload,
   DatabaseInfo,
   DatabaseUser,
+  DeleteByFilterRequest,
+  DeleteByFilterResponse,
   DeleteManyRequest,
   DeleteManyResponse,
   DeleteOneRequest,
@@ -30,9 +32,13 @@ import type {
   InsertOneRequest,
   InsertOneResponse,
   RenameCollectionPayload,
+  ReplaceByFilterRequest,
+  ReplaceByFilterResponse,
   ReplaceOneRequest,
   ReplaceOneResponse,
   ServerStats,
+  UpdateByFilterRequest,
+  UpdateByFilterResponse,
   UpdateUserPayload
 } from '@shared/types'
 
@@ -83,7 +89,13 @@ const api: Api = {
       invoke<InsertManyResponse>('query:insertMany', request),
     deleteOne: (request: DeleteOneRequest) => invoke<DeleteOneResponse>('query:deleteOne', request),
     deleteMany: (request: DeleteManyRequest) =>
-      invoke<DeleteManyResponse>('query:deleteMany', request)
+      invoke<DeleteManyResponse>('query:deleteMany', request),
+    updateByFilter: (request: UpdateByFilterRequest) =>
+      invoke<UpdateByFilterResponse>('query:updateByFilter', request),
+    deleteByFilter: (request: DeleteByFilterRequest) =>
+      invoke<DeleteByFilterResponse>('query:deleteByFilter', request),
+    replaceByFilter: (request: ReplaceByFilterRequest) =>
+      invoke<ReplaceByFilterResponse>('query:replaceByFilter', request)
   },
   users: {
     list: (payload: { connectionId: string; db: string }) =>

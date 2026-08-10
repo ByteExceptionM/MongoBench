@@ -14,6 +14,8 @@ import type {
   CreateUserPayload,
   DatabaseInfo,
   DatabaseUser,
+  DeleteByFilterRequest,
+  DeleteByFilterResponse,
   DeleteManyRequest,
   DeleteManyResponse,
   DeleteOneRequest,
@@ -28,9 +30,13 @@ import type {
   InsertOneRequest,
   InsertOneResponse,
   RenameCollectionPayload,
+  ReplaceByFilterRequest,
+  ReplaceByFilterResponse,
   ReplaceOneRequest,
   ReplaceOneResponse,
   ServerStats,
+  UpdateByFilterRequest,
+  UpdateByFilterResponse,
   UpdateUserPayload
 } from '@shared/types'
 
@@ -109,7 +115,13 @@ export const api = {
     deleteOne: (request: DeleteOneRequest): Promise<DeleteOneResponse> =>
       unwrap(window.api.query.deleteOne(request)),
     deleteMany: (request: DeleteManyRequest): Promise<DeleteManyResponse> =>
-      unwrap(window.api.query.deleteMany(request))
+      unwrap(window.api.query.deleteMany(request)),
+    updateByFilter: (request: UpdateByFilterRequest): Promise<UpdateByFilterResponse> =>
+      unwrap(window.api.query.updateByFilter(request)),
+    deleteByFilter: (request: DeleteByFilterRequest): Promise<DeleteByFilterResponse> =>
+      unwrap(window.api.query.deleteByFilter(request)),
+    replaceByFilter: (request: ReplaceByFilterRequest): Promise<ReplaceByFilterResponse> =>
+      unwrap(window.api.query.replaceByFilter(request))
   },
   users: {
     list: (payload: { connectionId: string; db: string }): Promise<DatabaseUser[]> =>

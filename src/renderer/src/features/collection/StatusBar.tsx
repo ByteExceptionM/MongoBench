@@ -10,6 +10,7 @@ export function StatusBar({
   skip,
   pageDocs,
   tookMs,
+  coll,
   onJump
 }: {
   loading: boolean
@@ -20,6 +21,8 @@ export function StatusBar({
   skip: number
   pageDocs: number
   tookMs: number | undefined
+  /** Set when the result comes from another collection than the tab's. */
+  coll: string | null
   onJump: (skip: number) => void
 }) {
   const hasLimit = pageSize > 0
@@ -37,6 +40,11 @@ export function StatusBar({
   return (
     <div className="flex h-9 items-center justify-between border-b bg-card/40 px-4 text-[11px] text-muted-foreground">
       <div className="flex items-center gap-3 font-mono">
+        {coll && (
+          <span className="rounded-sm bg-primary/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-primary">
+            {coll}
+          </span>
+        )}
         {loading ? (
           <span className="flex items-center gap-1.5">
             <Loader2 className="h-3 w-3 animate-spin" />

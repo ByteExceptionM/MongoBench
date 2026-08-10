@@ -15,6 +15,7 @@ import {
   CreateIndexSchema,
   CreateUserSchema,
   DatabaseRefSchema,
+  DeleteByFilterRequestSchema,
   DeleteManyRequestSchema,
   DeleteOneRequestSchema,
   DropIndexSchema,
@@ -25,7 +26,9 @@ import {
   InsertOneRequestSchema,
   RenameCollectionSchema,
   ReorderConnectionsSchema,
+  ReplaceByFilterRequestSchema,
   ReplaceOneRequestSchema,
+  UpdateByFilterRequestSchema,
   UpdateUserSchema
 } from '@shared/schemas'
 import type { Result } from '@shared/result'
@@ -226,6 +229,21 @@ export function registerIpcHandlers(services: Services): void {
   ipcMain.handle(
     Channels.QueryDeleteMany,
     withResult(DeleteManyRequestSchema, (request) => queries.deleteMany(request))
+  )
+
+  ipcMain.handle(
+    Channels.QueryUpdateByFilter,
+    withResult(UpdateByFilterRequestSchema, (request) => queries.updateByFilter(request))
+  )
+
+  ipcMain.handle(
+    Channels.QueryDeleteByFilter,
+    withResult(DeleteByFilterRequestSchema, (request) => queries.deleteByFilter(request))
+  )
+
+  ipcMain.handle(
+    Channels.QueryReplaceByFilter,
+    withResult(ReplaceByFilterRequestSchema, (request) => queries.replaceByFilter(request))
   )
 
   ipcMain.handle(

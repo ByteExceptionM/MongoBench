@@ -12,13 +12,20 @@ import { parseMongoQuery } from './mongoQueryLang'
  *   db.coll.countDocuments(<filter>?)
  *   db.coll.count(<filter>?)
  *   db.coll.aggregate(<pipeline>)
+ *   db.coll.insertOne(<document>)
+ *   db.coll.insertMany(<documents>)
+ *   db.coll.updateOne(<filter>, <update>[, { upsert: true }])
+ *   db.coll.updateMany(<filter>, <update>[, { upsert: true }])
+ *   db.coll.replaceOne(<filter>, <replacement>[, { upsert: true }])
+ *   db.coll.deleteOne(<filter>)
+ *   db.coll.deleteMany(<filter>)
  *
- * The collection name in the source is informational only — callers know
- * which tab they're in and pass that explicitly to the API. Mismatch
- * surfaces as a "wrong collection" parse error so the user notices.
+ * The collection name in the source is returned to the caller, which
+ * dispatches against it — a command may target a different collection
+ * than the tab it was typed in.
  */
 
-export type ShellOp =
+export type ShellReadOp =
   | {
       kind: 'find'
       filter: string
@@ -31,9 +38,51 @@ export type ShellOp =
   | { kind: 'countDocuments'; filter: string }
   | { kind: 'aggregate'; pipeline: string }
 
+export type ShellWriteOp =
+  | { kind: 'insertOne'; document: string }
+  | { kind: 'insertMany'; documents: string[] }
+  | { kind: 'updateOne'; filter: string; update: string; upsert: boolean }
+  | { kind: 'updateMany'; filter: string; update: string; upsert: boolean }
+  | { kind: 'replaceOne'; filter: string; replacement: string; upsert: boolean }
+  | { kind: 'deleteOne'; filter: string }
+  | { kind: 'deleteMany'; filter: string }
+
+export type ShellOp = ShellReadOp | ShellWriteOp
+
+const WRITE_KINDS: ReadonlySet<ShellOp['kind']> = new Set([
+  'insertOne',
+  'insertMany',
+  'updateOne',
+  'updateMany',
+  'replaceOne',
+  'deleteOne',
+  'deleteMany'
+])
+
+export function isWriteOp(op: ShellOp): op is ShellWriteOp {
+  return WRITE_KINDS.has(op.kind)
+}
+
+/**
+ * True when the command would rewrite or drop every document of the
+ * collection, which is worth an explicit confirmation before running.
+ */
+export function affectsWholeCollection(op: ShellOp): boolean {
+  if (op.kind !== 'deleteMany' && op.kind !== 'updateMany') return false
+  return op.filter === '{}'
+}
+
 export type ShellParseResult =
   | { ok: true; coll: string; op: ShellOp }
   | { ok: false; error: string }
+
+/** A write command the user asked to execute, ready to dispatch. */
+export type ShellWriteRequest = {
+  /** Verbatim source, used to tie a result to the command that produced it. */
+  command: string
+  coll: string
+  op: ShellWriteOp
+}
 
 const HEAD_RE = /^\s*db\s*\.\s*([A-Za-z_$][\w.$]*)\s*\.\s*([A-Za-z_$][\w$]*)\s*\(/
 
@@ -126,12 +175,169 @@ export function parseShellCommand(input: string): ShellParseResult {
       if (!trailer.ok) return { ok: false, error: trailer.error }
       return { ok: true, coll, op: { kind: 'aggregate', pipeline: parsed.ejson } }
     }
+    case 'insertOne': {
+      const args = expectArgs(argsSrc, method, 1, 1)
+      if (!args.ok) return { ok: false, error: args.error }
+      const document = compileObject(args.parts[0]!, 'document')
+      if (!document.ok) return { ok: false, error: document.error }
+      const trailer = expectNoTrailer(input.slice(argsEnd + 1))
+      if (!trailer.ok) return { ok: false, error: trailer.error }
+      return { ok: true, coll, op: { kind: 'insertOne', document: document.ejson } }
+    }
+    case 'insertMany': {
+      const args = expectArgs(argsSrc, method, 1, 1)
+      if (!args.ok) return { ok: false, error: args.error }
+      const parsed = parseMongoQuery(args.parts[0]!)
+      if (!parsed.ok) return { ok: false, error: `documents: ${parsed.error}` }
+      if (!Array.isArray(parsed.value) || parsed.value.length === 0) {
+        return { ok: false, error: 'documents: must be a non-empty array of documents' }
+      }
+      const documents: string[] = []
+      for (const entry of parsed.value) {
+        if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+          return { ok: false, error: 'documents: every entry must be an object' }
+        }
+        documents.push(JSON.stringify(entry))
+      }
+      const trailer = expectNoTrailer(input.slice(argsEnd + 1))
+      if (!trailer.ok) return { ok: false, error: trailer.error }
+      return { ok: true, coll, op: { kind: 'insertMany', documents } }
+    }
+    case 'updateOne':
+    case 'updateMany': {
+      const args = expectArgs(argsSrc, method, 2, 3)
+      if (!args.ok) return { ok: false, error: args.error }
+      const filter = compileObject(args.parts[0]!, 'filter')
+      if (!filter.ok) return { ok: false, error: filter.error }
+      const update = compileUpdate(args.parts[1]!)
+      if (!update.ok) return { ok: false, error: update.error }
+      const options = compileWriteOptions(args.parts[2])
+      if (!options.ok) return { ok: false, error: options.error }
+      const trailer = expectNoTrailer(input.slice(argsEnd + 1))
+      if (!trailer.ok) return { ok: false, error: trailer.error }
+      return {
+        ok: true,
+        coll,
+        op: {
+          kind: method === 'updateOne' ? 'updateOne' : 'updateMany',
+          filter: filter.ejson,
+          update: update.ejson,
+          upsert: options.upsert
+        }
+      }
+    }
+    case 'replaceOne': {
+      const args = expectArgs(argsSrc, method, 2, 3)
+      if (!args.ok) return { ok: false, error: args.error }
+      const filter = compileObject(args.parts[0]!, 'filter')
+      if (!filter.ok) return { ok: false, error: filter.error }
+      const replacement = compileObject(args.parts[1]!, 'replacement')
+      if (!replacement.ok) return { ok: false, error: replacement.error }
+      const options = compileWriteOptions(args.parts[2])
+      if (!options.ok) return { ok: false, error: options.error }
+      const trailer = expectNoTrailer(input.slice(argsEnd + 1))
+      if (!trailer.ok) return { ok: false, error: trailer.error }
+      return {
+        ok: true,
+        coll,
+        op: {
+          kind: 'replaceOne',
+          filter: filter.ejson,
+          replacement: replacement.ejson,
+          upsert: options.upsert
+        }
+      }
+    }
+    case 'deleteOne':
+    case 'deleteMany': {
+      const args = expectArgs(argsSrc, method, 1, 1)
+      if (!args.ok) return { ok: false, error: args.error }
+      const filter = compileObject(args.parts[0]!, 'filter')
+      if (!filter.ok) return { ok: false, error: filter.error }
+      const trailer = expectNoTrailer(input.slice(argsEnd + 1))
+      if (!trailer.ok) return { ok: false, error: trailer.error }
+      return {
+        ok: true,
+        coll,
+        op: { kind: method === 'deleteOne' ? 'deleteOne' : 'deleteMany', filter: filter.ejson }
+      }
+    }
     default:
       return {
         ok: false,
-        error: `Unsupported method: ${method}. Try find, findOne, aggregate, count, countDocuments.`
+        error: `Unsupported method: ${method}. Try find, findOne, aggregate, count, countDocuments, insertOne, insertMany, updateOne, updateMany, replaceOne, deleteOne or deleteMany.`
       }
   }
+}
+
+type ArgsResult = { ok: true; parts: string[] } | { ok: false; error: string }
+
+function expectArgs(argsSrc: string, method: string, min: number, max: number): ArgsResult {
+  const split = splitTopLevelArgs(argsSrc)
+  if (!split.ok) return { ok: false, error: split.error }
+  const parts = [...split.parts]
+  while (parts.length > 0 && (parts[parts.length - 1] ?? '').length === 0) parts.pop()
+  if (parts.length < min || parts.length > max) {
+    const expected = min === max ? `${min}` : `${min} to ${max}`
+    return {
+      ok: false,
+      error: `\`${method}\` expects ${expected} argument(s), got ${parts.length}`
+    }
+  }
+  for (let i = 0; i < min; i++) {
+    if ((parts[i] ?? '').length === 0) {
+      return { ok: false, error: `\`${method}\` argument ${i + 1} must not be empty` }
+    }
+  }
+  return { ok: true, parts }
+}
+
+type UpdateResult = { ok: true; ejson: string } | { ok: false; error: string }
+
+function compileUpdate(src: string): UpdateResult {
+  const parsed = parseMongoQuery(src)
+  if (!parsed.ok) return { ok: false, error: `update: ${parsed.error}` }
+  if (Array.isArray(parsed.value)) {
+    for (const stage of parsed.value) {
+      if (stage === null || typeof stage !== 'object' || Array.isArray(stage)) {
+        return { ok: false, error: 'update: every pipeline stage must be an object' }
+      }
+    }
+    return { ok: true, ejson: parsed.ejson }
+  }
+  if (parsed.value === null || typeof parsed.value !== 'object') {
+    return { ok: false, error: 'update: must be an object' }
+  }
+  const keys = Object.keys(parsed.value as Record<string, unknown>)
+  if (keys.length === 0 || !keys.every((key) => key.startsWith('$'))) {
+    return {
+      ok: false,
+      error: 'update: must only contain update operators such as $set. Use replaceOne otherwise.'
+    }
+  }
+  return { ok: true, ejson: parsed.ejson }
+}
+
+type WriteOptionsResult = { ok: true; upsert: boolean } | { ok: false; error: string }
+
+function compileWriteOptions(src: string | undefined): WriteOptionsResult {
+  if (src === undefined || src.trim().length === 0) return { ok: true, upsert: false }
+  const parsed = parseMongoQuery(src)
+  if (!parsed.ok) return { ok: false, error: `options: ${parsed.error}` }
+  if (parsed.value === null || typeof parsed.value !== 'object' || Array.isArray(parsed.value)) {
+    return { ok: false, error: 'options: must be an object' }
+  }
+  const options = parsed.value as Record<string, unknown>
+  for (const key of Object.keys(options)) {
+    if (key !== 'upsert') {
+      return { ok: false, error: `options: unsupported option "${key}". Only upsert is supported.` }
+    }
+  }
+  const upsert = options['upsert']
+  if (upsert !== undefined && typeof upsert !== 'boolean') {
+    return { ok: false, error: 'options: upsert must be true or false' }
+  }
+  return { ok: true, upsert: upsert === true }
 }
 
 type CompiledObject = { ok: true; ejson: string } | { ok: false; error: string }
@@ -150,7 +356,7 @@ type TrailerResult =
   | { ok: true; sort: string | null; skip: number | null; limit: number | null }
   | { ok: false; error: string }
 
-function parseTrailer(rest: string): TrailerResult {
+function parseTrailer(rest: string, cursorMethods = true): TrailerResult {
   let s = rest.trim()
   let sort: string | null = null
   let skip: number | null = null
@@ -167,6 +373,10 @@ function parseTrailer(rest: string): TrailerResult {
     const argsEnd = matchClosingParen(s, argsStart - 1)
     if (argsEnd < 0) return { ok: false, error: `Missing closing ')' on .${name}(...)` }
     const argSrc = s.slice(argsStart, argsEnd).trim()
+
+    if (!cursorMethods && (name === 'sort' || name === 'skip' || name === 'limit')) {
+      return { ok: false, error: `.${name}() is only supported on find()` }
+    }
 
     switch (name) {
       case 'sort': {
@@ -208,9 +418,8 @@ function parseTrailer(rest: string): TrailerResult {
 }
 
 function expectNoTrailer(rest: string): TrailerResult {
-  const r = parseTrailer(rest)
+  const r = parseTrailer(rest, false)
   if (!r.ok) return r
-  // Ignore the read fields; just propagate ok-ness.
   return { ok: true, sort: null, skip: null, limit: null }
 }
 

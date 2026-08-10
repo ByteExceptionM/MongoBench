@@ -13,6 +13,8 @@ import type {
   CreateUserPayload,
   DatabaseInfo,
   DatabaseUser,
+  DeleteByFilterRequest,
+  DeleteByFilterResponse,
   DeleteManyRequest,
   DeleteManyResponse,
   DeleteOneRequest,
@@ -27,9 +29,13 @@ import type {
   InsertOneRequest,
   InsertOneResponse,
   RenameCollectionPayload,
+  ReplaceByFilterRequest,
+  ReplaceByFilterResponse,
   ReplaceOneRequest,
   ReplaceOneResponse,
   ServerStats,
+  UpdateByFilterRequest,
+  UpdateByFilterResponse,
   UpdateUserPayload
 } from './types'
 import type { Result } from './result'
@@ -91,6 +97,9 @@ export type Api = {
     insertMany: (request: InsertManyRequest) => Promise<Result<InsertManyResponse>>
     deleteOne: (request: DeleteOneRequest) => Promise<Result<DeleteOneResponse>>
     deleteMany: (request: DeleteManyRequest) => Promise<Result<DeleteManyResponse>>
+    updateByFilter: (request: UpdateByFilterRequest) => Promise<Result<UpdateByFilterResponse>>
+    deleteByFilter: (request: DeleteByFilterRequest) => Promise<Result<DeleteByFilterResponse>>
+    replaceByFilter: (request: ReplaceByFilterRequest) => Promise<Result<ReplaceByFilterResponse>>
   }
 
   users: {

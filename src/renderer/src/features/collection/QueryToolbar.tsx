@@ -1,14 +1,29 @@
 import { type FormEvent, useEffect, useMemo, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { ArrowDownUp, Eye, Play, Wand2, X, XCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Tooltip } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { parseMongoQuery } from '@/lib/mongoQueryLang'
-import { parseShellCommand, type ShellParseResult } from '@/lib/shellParser'
+import {
+  isWriteOp,
+  parseShellCommand,
+  type ShellParseResult,
+  type ShellWriteRequest
+} from '@/lib/shellParser'
+import {
+  setDocumentFieldNames,
+  PIPELINE_COMPLETION_CONTEXT,
+  PROJECTION_COMPLETION_CONTEXT,
+  SORT_COMPLETION_CONTEXT,
+  type EditorCompletionContext
+} from '@/lib/monacoCompletions'
+import { api } from '@/lib/api'
+import { queryKeys } from '@/lib/queryClient'
 import type { CollectionTab, QueryMode, QueryPatch } from '@/store/tabs'
 import type { DocumentEnvelope, UuidEncoding } from '@shared/types'
 import { ExportButton } from './ExportButton'
-import { QueryEditor, setDocumentFieldNames } from './QueryEditor'
+import { QueryEditor } from './QueryEditor'
 
 const EMPTY_OBJECT = '{}'
 const EMPTY_ARRAY = '[]'
@@ -24,6 +39,7 @@ const MODES: ReadonlyArray<{ id: QueryMode; label: string }> = [
 export function QueryToolbar({
   tab,
   onApply,
+  onRunWrite,
   onCancel,
   loading,
   documents,
@@ -35,6 +51,7 @@ export function QueryToolbar({
 }: {
   tab: CollectionTab
   onApply: (patch: QueryPatch) => void
+  onRunWrite: (request: ShellWriteRequest) => void
   onCancel: () => void
   loading: boolean
   documents: DocumentEnvelope[]
@@ -70,16 +87,38 @@ export function QueryToolbar({
     setDocumentFieldNames(names)
   }, [documents])
 
+  // Shell commands may address any collection of the database, so the
+  // completion needs the full list. The explorer already caches it.
+  const collectionsQuery = useQuery({
+    queryKey: queryKeys.collections(tab.connectionId, tab.db),
+    queryFn: () => api.collections.list({ connectionId: tab.connectionId, db: tab.db }),
+    enabled: tab.mode === 'shell'
+  })
+  const collectionNames = useMemo(
+    () => (collectionsQuery.data ?? []).map((entry) => entry.name),
+    [collectionsQuery.data]
+  )
+  const shellCompletionContext = useMemo<EditorCompletionContext>(
+    () => ({ kind: 'shell', coll: tab.coll, collections: collectionNames }),
+    [tab.coll, collectionNames]
+  )
+
   const filterStatus = useMemo(() => parseObjectStatus(filter), [filter])
   const projectionStatus = useMemo(() => parseObjectStatus(projection), [projection])
   const sortStatus = useMemo(() => parseObjectStatus(sort), [sort])
   const pipelineStatus = useMemo(() => parsePipelineStatus(pipeline), [pipeline])
-  const shellStatus = useMemo(() => parseShellStatus(shell, tab.coll), [shell, tab.coll])
+  const shellStatus = useMemo(() => parseShellStatus(shell), [shell])
 
   const simpleInvalid =
     filterStatus.kind === 'invalid' ||
     projectionStatus.kind === 'invalid' ||
     sortStatus.kind === 'invalid'
+  const modeEmpty =
+    tab.mode === 'aggregation'
+      ? pipelineStatus.kind === 'empty'
+      : tab.mode === 'shell'
+        ? shellStatus.kind === 'empty'
+        : false
   const modeInvalid =
     tab.mode === 'simple'
       ? simpleInvalid
@@ -98,11 +137,20 @@ export function QueryToolbar({
       const limitNum = Number.parseInt(limit, 10)
       const nextLimit = Number.isFinite(limitNum) && limitNum > 0 ? limitNum : 0
       onApply({ filter, projection, sort, skip: 0, limit: nextLimit, runEpoch })
-    } else if (tab.mode === 'aggregation') {
-      onApply({ pipeline, skip: 0, runEpoch })
-    } else {
-      onApply({ shell, skip: 0, runEpoch })
+      return
     }
+    if (tab.mode === 'aggregation') {
+      onApply({ pipeline, skip: 0, runEpoch })
+      return
+    }
+    if (shellStatus.kind === 'ok' && isWriteOp(shellStatus.parsed.op)) {
+      // Writes must not become part of a refetchable query key; commit the
+      // source and hand the command over for a single imperative run.
+      onApply({ shell, skip: 0 })
+      onRunWrite({ command: shell, coll: shellStatus.parsed.coll, op: shellStatus.parsed.op })
+      return
+    }
+    onApply({ shell, skip: 0, runEpoch })
   }
 
   const setMode = (mode: QueryMode) => {
@@ -147,8 +195,13 @@ export function QueryToolbar({
               </Button>
             </Tooltip>
           ) : (
-            <Tooltip content="Run · ⌘/Ctrl-Enter">
-              <Button type="submit" size="sm" className="h-8 shrink-0 px-3">
+            <Tooltip content={runHint(tab.mode, tab.coll, modeEmpty, modeInvalid)}>
+              <Button
+                type="submit"
+                size="sm"
+                aria-disabled={modeInvalid}
+                className={cn('h-8 shrink-0 px-3', modeInvalid && 'opacity-50')}
+              >
                 <Play className="h-3.5 w-3.5" />
                 Run
               </Button>
@@ -204,6 +257,7 @@ export function QueryToolbar({
             shell={shell}
             setShell={setShell}
             status={shellStatus}
+            completionContext={shellCompletionContext}
             onSubmit={() => apply()}
           />
         )}
@@ -306,6 +360,7 @@ function SimpleBody({
           onSubmit={onSubmit}
           onFormat={() => formatObject(sortStatus, setSort)}
           status={sortStatus}
+          completionContext={SORT_COMPLETION_CONTEXT}
           minHeight={sharedRowH}
           onContentHeight={setSortContentH}
         />
@@ -318,6 +373,7 @@ function SimpleBody({
           onSubmit={onSubmit}
           onFormat={() => formatObject(projectionStatus, setProjection)}
           status={projectionStatus}
+          completionContext={PROJECTION_COMPLETION_CONTEXT}
           minHeight={sharedRowH}
           onContentHeight={setProjContentH}
         />
@@ -347,6 +403,7 @@ function AggregationBody({
         onSubmit={onSubmit}
         onFormat={onFormat}
         hasError={status.kind === 'invalid'}
+        completionContext={PIPELINE_COMPLETION_CONTEXT}
         minHeight={120}
         maxHeight={400}
         placeholder={'[\n  { $match: { … } },\n  { $group: { _id: "$type", n: { $sum: 1 } } }\n]'}
@@ -366,12 +423,14 @@ function ShellBody({
   shell,
   setShell,
   status,
+  completionContext,
   onSubmit
 }: {
   coll: string
   shell: string
   setShell: (next: string) => void
   status: ShellStatus
+  completionContext: EditorCompletionContext
   onSubmit: () => void
 }) {
   return (
@@ -381,6 +440,7 @@ function ShellBody({
         onChange={setShell}
         onSubmit={onSubmit}
         hasError={status.kind === 'invalid'}
+        completionContext={completionContext}
         minHeight={60}
         maxHeight={240}
         placeholder={`db.${coll}.find({ … }).sort({ … }).limit(50)`}
@@ -388,6 +448,16 @@ function ShellBody({
       />
     </div>
   )
+}
+
+function runHint(mode: QueryMode, coll: string, empty: boolean, invalid: boolean): string {
+  if (empty) {
+    return mode === 'shell'
+      ? `Type a command such as db.${coll}.find({}) to run it`
+      : 'Add at least one pipeline stage to run it'
+  }
+  if (invalid) return 'Fix the highlighted input to run this query'
+  return 'Run · ⌘/Ctrl-Enter'
 }
 
 function LimitInput({ value, onChange }: { value: string; onChange: (next: string) => void }) {
@@ -419,6 +489,7 @@ function OptionRow({
   onSubmit,
   onFormat,
   status,
+  completionContext,
   minHeight,
   onContentHeight
 }: {
@@ -430,6 +501,7 @@ function OptionRow({
   onSubmit: () => void
   onFormat: () => void
   status: ObjectStatus
+  completionContext: EditorCompletionContext
   minHeight: number
   onContentHeight: (px: number) => void
 }) {
@@ -446,6 +518,7 @@ function OptionRow({
           onSubmit={onSubmit}
           onFormat={onFormat}
           hasError={status.kind === 'invalid'}
+          completionContext={completionContext}
           minHeight={minHeight}
           maxHeight={120}
           placeholder={placeholder}
@@ -536,16 +609,10 @@ type ShellStatus =
   | { kind: 'ok'; parsed: ShellParseResult & { ok: true } }
   | { kind: 'invalid'; error: string }
 
-function parseShellStatus(value: string, expectedColl: string): ShellStatus {
+function parseShellStatus(value: string): ShellStatus {
   const trimmed = value.trim()
   if (trimmed.length === 0) return { kind: 'empty' }
   const parsed = parseShellCommand(trimmed)
   if (!parsed.ok) return { kind: 'invalid', error: parsed.error }
-  if (parsed.coll !== expectedColl) {
-    return {
-      kind: 'invalid',
-      error: `Collection mismatch: this tab is "${expectedColl}", command targets "${parsed.coll}"`
-    }
-  }
   return { kind: 'ok', parsed }
 }
