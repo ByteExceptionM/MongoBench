@@ -12,9 +12,11 @@ import { ConnectionService } from './services/ConnectionService'
 import { DatabaseService } from './services/DatabaseService'
 import { IndexService } from './services/IndexService'
 import { QueryService } from './services/QueryService'
+import { SshTunnelService } from './services/SshTunnelService'
 import { UpdaterService } from './services/UpdaterService'
 import { UserService } from './services/UserService'
 import { ConnectionsRepository } from './stores/ConnectionsRepository'
+import { HostKeysStore } from './stores/HostKeysStore'
 import { SecretsStore } from './stores/SecretsStore'
 
 log.initialize()
@@ -30,8 +32,14 @@ const services = {
   connections: null as ConnectionService | null
 }
 
-// Held module-wide so the updater can push progress to the renderer.
+// Held module-wide so main can push to the renderer outside of a request.
 let mainWindow: BrowserWindow | null = null
+
+function pushToRenderer(channel: string, payload: unknown): void {
+  if (mainWindow !== null && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(channel, payload)
+  }
+}
 
 function createWindow(): void {
   const window = new BrowserWindow({
@@ -105,15 +113,16 @@ function createWindow(): void {
 app.whenReady().then(() => {
   const secrets = new SecretsStore()
   const repo = new ConnectionsRepository(secrets)
-  const connections = new ConnectionService(repo)
+  const tunnels = new SshTunnelService(new HostKeysStore())
+  const connections = new ConnectionService(repo, tunnels, (connectionId, reason) =>
+    pushToRenderer(EventChannels.ConnectionDropped, { connectionId, reason })
+  )
   const databases = new DatabaseService(connections)
   const queries = new QueryService(connections)
   const users = new UserService(connections)
   const indexes = new IndexService(connections)
   const updater = new UpdaterService((progress) => {
-    if (mainWindow !== null && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send(EventChannels.UpdaterProgress, progress)
-    }
+    pushToRenderer(EventChannels.UpdaterProgress, progress)
   })
   services.repo = repo
   services.connections = connections

@@ -7,6 +7,7 @@ import type {
   ConnectionInput,
   ConnectionTestResult,
   ConnectionUpdatePayload,
+  ConnectResult,
   CountRequest,
   CountResponse,
   CreateIndexPayload,
@@ -32,7 +33,7 @@ import type {
   ServerStats,
   UpdateUserPayload
 } from './types'
-import type { UpdateCheckResult, UpdateProgress } from './events'
+import type { ConnectionDropped, UpdateCheckResult, UpdateProgress } from './events'
 import type { Result } from './result'
 
 /**
@@ -52,9 +53,16 @@ export type Api = {
     update: (payload: ConnectionUpdatePayload) => Promise<Result<ConnectionConfig>>
     delete: (id: string) => Promise<Result<void>>
     test: (input: ConnectionInput, existingId?: string) => Promise<Result<ConnectionTestResult>>
-    connect: (id: string) => Promise<Result<{ connectionId: string }>>
+    connect: (id: string) => Promise<Result<ConnectResult>>
     disconnect: (connectionId: string) => Promise<Result<void>>
     reorder: (ids: string[]) => Promise<Result<void>>
+    /** Main tore a connection down by itself. Returns an unsubscribe. */
+    onDropped: (listener: (payload: ConnectionDropped) => void) => () => void
+  }
+
+  dialog: {
+    /** Absolute path, or null when the user cancelled. */
+    pickPrivateKey: () => Promise<Result<string | null>>
   }
 
   databases: {

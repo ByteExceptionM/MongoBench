@@ -43,12 +43,15 @@ export const Channels = {
 
   UpdaterCheck: 'updater:check',
   UpdaterDownload: 'updater:download',
-  UpdaterInstall: 'updater:install'
+  UpdaterInstall: 'updater:install',
+
+  DialogPickPrivateKey: 'dialog:pickPrivateKey'
 } as const
 
 export type ChannelName = (typeof Channels)[keyof typeof Channels]
 
 /** main → renderer pushes. Subscribed to in the preload, never `handle`d. */
 export const EventChannels = {
-  UpdaterProgress: 'updater:progress'
+  UpdaterProgress: 'updater:progress',
+  ConnectionDropped: 'connections:dropped'
 } as const

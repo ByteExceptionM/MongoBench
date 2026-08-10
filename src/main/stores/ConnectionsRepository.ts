@@ -2,7 +2,14 @@ import { app } from 'electron'
 import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import type { ConnectionConfig, ConnectionInput, StoredConnection } from '@shared/types'
+import type {
+  ConnectionConfig,
+  ConnectionInput,
+  SshTunnelInput,
+  SshTunnelView,
+  StoredConnection,
+  StoredSshTunnel
+} from '@shared/types'
 import { canonicalize, ensurePasswordPlaceholder, parseUri } from '../lib/connectionUri'
 import type { SecretsStore } from './SecretsStore'
 
@@ -95,6 +102,20 @@ export class ConnectionsRepository {
     return this.secrets.decrypt(stored.encryptedPassword)
   }
 
+  /** The SSH secrets in cleartext. Empty when the connection has none. */
+  decryptSsh(stored: StoredConnection): { password?: string; passphrase?: string } {
+    const ssh = stored.ssh
+    if (ssh === undefined) return {}
+    return {
+      ...(ssh.encryptedPassword !== undefined
+        ? { password: this.secrets.decrypt(ssh.encryptedPassword) }
+        : {}),
+      ...(ssh.encryptedPassphrase !== undefined
+        ? { passphrase: this.secrets.decrypt(ssh.encryptedPassphrase) }
+        : {})
+    }
+  }
+
   private fromInput(input: ConnectionInput, existing?: StoredConnection): StoredConnection {
     const now = new Date().toISOString()
     const canonical = canonicalize({
@@ -105,6 +126,7 @@ export class ConnectionsRepository {
         : {})
     })
 
+    const ssh = this.sshFromInput(input.ssh, existing?.ssh)
     let encryptedPassword: string | undefined = existing?.encryptedPassword
     let storageUri = canonical.storageUri
 
@@ -134,6 +156,7 @@ export class ConnectionsRepository {
         ? { serverSelectionTimeoutMS: input.serverSelectionTimeoutMS }
         : {}),
       ...(input.appName !== undefined ? { appName: input.appName } : {}),
+      ...(ssh !== undefined ? { ssh } : {}),
       ...(input.directConnection !== undefined ? { directConnection: input.directConnection } : {}),
       ...(input.replicaSet !== undefined ? { replicaSet: input.replicaSet } : {}),
       ...(input.readPreference !== undefined ? { readPreference: input.readPreference } : {}),
@@ -148,6 +171,49 @@ export class ConnectionsRepository {
       ...(input.retryReads !== undefined ? { retryReads: input.retryReads } : {}),
       createdAt: existing?.createdAt ?? now,
       updatedAt: now
+    }
+  }
+
+  /**
+   * Encrypts the SSH secrets, or carries the stored ciphertext over when the
+   * form left the field blank — the same "blank means keep" convention the
+   * MongoDB password uses.
+   *
+   * A secret only survives while the auth method it belongs to is still
+   * selected, so switching to key auth does not leave a password behind in
+   * connections.json that nothing will ever use again.
+   */
+  private sshFromInput(
+    input: SshTunnelInput | undefined,
+    existing: StoredSshTunnel | undefined
+  ): StoredSshTunnel | undefined {
+    if (input === undefined) return undefined
+
+    const carriedPassword =
+      input.authMethod === 'password' ? existing?.encryptedPassword : undefined
+    const carriedPassphrase =
+      input.authMethod === 'privateKey' ? existing?.encryptedPassphrase : undefined
+
+    const encryptedPassword =
+      input.password !== undefined && input.password.length > 0
+        ? this.secrets.encrypt(input.password)
+        : carriedPassword
+    const encryptedPassphrase =
+      input.passphrase !== undefined && input.passphrase.length > 0
+        ? this.secrets.encrypt(input.passphrase)
+        : carriedPassphrase
+
+    return {
+      enabled: input.enabled,
+      host: input.host,
+      ...(input.port !== undefined ? { port: input.port } : {}),
+      username: input.username,
+      authMethod: input.authMethod,
+      ...(input.privateKeyPath !== undefined && input.privateKeyPath.length > 0
+        ? { privateKeyPath: input.privateKeyPath }
+        : {}),
+      ...(encryptedPassword !== undefined ? { encryptedPassword } : {}),
+      ...(encryptedPassphrase !== undefined ? { encryptedPassphrase } : {})
     }
   }
 
@@ -182,16 +248,27 @@ export class ConnectionsRepository {
  * renderer never sees either the placeholder token or any cleartext.
  * The username remains available as its own field; the renderer can
  * reconstruct a display string from `{uri, username, hasStoredPassword}`.
+ * The SSH secrets go the same way, down to `hasStored…` flags.
  *
  * THIS IS THE ONLY PLACE THIS PROJECTION SHOULD HAPPEN.
  */
 export function toRendererView(stored: StoredConnection): ConnectionConfig {
-  const { encryptedPassword, ...rest } = stored
+  const { encryptedPassword, ssh, ...rest } = stored
   const parts = parseUri(stored.uri)
   const bareUri = `${parts.schemeWithSep}${parts.hostAndRest}`
   return {
     ...rest,
     uri: bareUri,
+    ...(ssh !== undefined ? { ssh: toSshView(ssh) } : {}),
     hasStoredPassword: encryptedPassword !== undefined
+  }
+}
+
+function toSshView(ssh: StoredSshTunnel): SshTunnelView {
+  const { encryptedPassword, encryptedPassphrase, ...rest } = ssh
+  return {
+    ...rest,
+    hasStoredPassword: encryptedPassword !== undefined,
+    hasStoredPassphrase: encryptedPassphrase !== undefined
   }
 }

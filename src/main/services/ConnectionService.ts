@@ -1,6 +1,14 @@
 import { MongoClient, type MongoClientOptions } from 'mongodb'
 import log from 'electron-log/main'
-import type { ConnectionInput, ConnectionTestResult, StoredConnection } from '@shared/types'
+import {
+  DEFAULT_SSH_PORT,
+  type ConnectionInput,
+  type ConnectionTestResult,
+  type ConnectResult,
+  type StoredSshTunnel,
+  type SshTunnelInput,
+  type StoredConnection
+} from '@shared/types'
 import {
   type ConnectionsRepository,
   ConnectionNotFoundError
@@ -11,6 +19,7 @@ import {
   injectExternalCredentials,
   injectStoredPassword
 } from '../lib/connectionUri'
+import type { ResolvedSshTunnel, SshTunnelService, Tunnel } from './SshTunnelService'
 
 const DEFAULT_TIMEOUT = 3000
 
@@ -21,15 +30,26 @@ export class NotConnectedError extends Error {
   }
 }
 
+/** A live connection, plus the tunnel it runs through if it has one. */
+type Active = { client: MongoClient; tunnel: Tunnel | null }
+
 /**
  * Holds open MongoClient instances keyed by connection id. Multiple
  * connections may be active concurrently (multi-active model — see
  * design spec §14.1).
+ *
+ * A tunnel is held next to the client it belongs to, so the two always come
+ * and go together.
  */
 export class ConnectionService {
-  private clients = new Map<string, MongoClient>()
+  private clients = new Map<string, Active>()
 
-  constructor(private readonly repo: ConnectionsRepository) {}
+  constructor(
+    private readonly repo: ConnectionsRepository,
+    private readonly tunnels: SshTunnelService,
+    /** Called when main takes a connection down by itself. */
+    private readonly onDropped: (connectionId: string, reason: string) => void
+  ) {}
 
   /**
    * Open a temporary client, ping the server, close it. Reports latency
@@ -41,9 +61,22 @@ export class ConnectionService {
    */
   async test(input: ConnectionInput, existingId?: string): Promise<ConnectionTestResult> {
     const uri = await this.materializeFromInput(input, existingId)
-    const client = new MongoClient(uri, this.optionsFromInput(input))
+    // A probe's tunnel is nobody else's: it is closed in the finally below, and
+    // its death needs no drop callback — the in-flight ping reports it.
+    const tunnel =
+      input.ssh?.enabled === true
+        ? await this.tunnels.open(await this.resolveSshFromInput(input.ssh, existingId))
+        : null
+
     const startedAt = Date.now()
+    let client: MongoClient | null = null
     try {
+      // Inside the try: the constructor parses the URI and throws on a bad
+      // option, which would otherwise leak the tunnel.
+      client = new MongoClient(uri, {
+        ...this.optionsFromInput(input),
+        ...(tunnel?.proxyOptions ?? {})
+      })
       await client.connect()
       const ping = (await client.db('admin').command({ ping: 1 })) as { ok?: number }
       const buildInfo = (await client.db('admin').command({ buildInfo: 1 })) as {
@@ -52,36 +85,66 @@ export class ConnectionService {
       return {
         ok: ping.ok === 1,
         latencyMs: Date.now() - startedAt,
-        ...(buildInfo.version !== undefined ? { serverVersion: buildInfo.version } : {})
+        ...(buildInfo.version !== undefined ? { serverVersion: buildInfo.version } : {}),
+        ...(tunnel?.pinnedHostKey ? { pinnedHostKey: tunnel.pinnedHostKey } : {})
       }
     } finally {
-      await client.close().catch(() => undefined)
+      await client?.close().catch(() => undefined)
+      await tunnel?.close().catch(() => undefined)
     }
   }
 
-  async connect(id: string): Promise<{ connectionId: string }> {
+  async connect(id: string): Promise<ConnectResult> {
     if (this.clients.has(id)) return { connectionId: id }
     const stored = await this.repo.getStored(id)
     if (!stored) throw new ConnectionNotFoundError(id)
     const uri = this.materializeFromStored(stored)
-    const client = new MongoClient(uri, this.optionsFromStored(stored))
-    await client.connect()
-    this.clients.set(id, client)
+
+    const ssh = stored.ssh
+    const tunnel =
+      ssh?.enabled === true
+        ? await this.tunnels.open(this.resolveSshFromStored(stored, ssh), (reason) =>
+            this.dropConnection(id, reason)
+          )
+        : null
+
+    let client: MongoClient | null = null
+    try {
+      client = new MongoClient(uri, {
+        ...this.optionsFromStored(stored),
+        ...(tunnel?.proxyOptions ?? {})
+      })
+      await client.connect()
+    } catch (error) {
+      await client?.close().catch(() => undefined)
+      await tunnel?.close().catch(() => undefined)
+      throw error
+    }
+    this.clients.set(id, { client, tunnel })
     log.info(`Connected ${stored.name} (${id})`)
-    return { connectionId: id }
+    return {
+      connectionId: id,
+      ...(tunnel?.pinnedHostKey ? { pinnedHostKey: tunnel.pinnedHostKey } : {})
+    }
   }
 
   async disconnect(id: string): Promise<void> {
-    const client = this.clients.get(id)
-    if (!client) return
+    const active = this.clients.get(id)
+    if (!active) return
     this.clients.delete(id)
-    await client.close()
+    try {
+      await active.client.close()
+    } finally {
+      await active.tunnel?.close()
+    }
     log.info(`Disconnected ${id}`)
   }
 
   async closeAll(): Promise<void> {
     const ids = [...this.clients.keys()]
     await Promise.allSettled(ids.map((id) => this.disconnect(id)))
+    // Sweeps anything a failed open left behind.
+    await this.tunnels.closeAll()
   }
 
   isConnected(id: string): boolean {
@@ -89,9 +152,19 @@ export class ConnectionService {
   }
 
   getClient(id: string): MongoClient {
-    const client = this.clients.get(id)
-    if (!client) throw new NotConnectedError(id)
-    return client
+    const active = this.clients.get(id)
+    if (!active) throw new NotConnectedError(id)
+    return active.client
+  }
+
+  /** The tunnel died on its own; the client on top of it is finished too. */
+  private dropConnection(id: string, reason: string): void {
+    const active = this.clients.get(id)
+    if (active === undefined) return
+    this.clients.delete(id)
+    void active.client.close().catch(() => undefined)
+    log.warn(`Closed ${id} because its SSH tunnel dropped: ${reason}`)
+    this.onDropped(id, reason)
   }
 
   /**
@@ -105,9 +178,7 @@ export class ConnectionService {
   }
 
   private async materializeFromInput(input: ConnectionInput, existingId?: string): Promise<string> {
-    const formPassword =
-      input.password !== undefined && input.password.length > 0 ? input.password : undefined
-    let effectivePassword = formPassword
+    let effectivePassword = nonEmpty(input.password)
     if (effectivePassword === undefined && existingId !== undefined) {
       const stored = await this.repo.getStored(existingId)
       if (stored) {
@@ -141,6 +212,50 @@ export class ConnectionService {
       return injectExternalCredentials(stored.uri, stored.username, password)
     }
     return stored.uri
+  }
+
+  private resolveSshFromStored(stored: StoredConnection, ssh: StoredSshTunnel): ResolvedSshTunnel {
+    const secrets = this.repo.decryptSsh(stored)
+    return {
+      host: ssh.host,
+      port: ssh.port ?? DEFAULT_SSH_PORT,
+      username: ssh.username,
+      authMethod: ssh.authMethod,
+      ...(ssh.privateKeyPath !== undefined ? { privateKeyPath: ssh.privateKeyPath } : {}),
+      ...(secrets.password !== undefined ? { password: secrets.password } : {}),
+      ...(secrets.passphrase !== undefined ? { passphrase: secrets.passphrase } : {})
+    }
+  }
+
+  /**
+   * Same, for the unsaved form payload behind "Test connection". A blank secret
+   * falls back to what the edited connection has stored, exactly as
+   * materializeFromInput does for the MongoDB password.
+   */
+  private async resolveSshFromInput(
+    input: SshTunnelInput,
+    existingId?: string
+  ): Promise<ResolvedSshTunnel> {
+    let password = nonEmpty(input.password)
+    let passphrase = nonEmpty(input.passphrase)
+    if ((password === undefined || passphrase === undefined) && existingId !== undefined) {
+      const stored = await this.repo.getStored(existingId)
+      if (stored) {
+        const secrets = this.repo.decryptSsh(stored)
+        password ??= secrets.password
+        passphrase ??= secrets.passphrase
+      }
+    }
+    const privateKeyPath = nonEmpty(input.privateKeyPath)
+    return {
+      host: input.host,
+      port: input.port ?? DEFAULT_SSH_PORT,
+      username: input.username,
+      authMethod: input.authMethod,
+      ...(privateKeyPath !== undefined ? { privateKeyPath } : {}),
+      ...(password !== undefined ? { password } : {}),
+      ...(passphrase !== undefined ? { passphrase } : {})
+    }
   }
 
   private optionsFromInput(input: ConnectionInput): MongoClientOptions {
@@ -180,6 +295,10 @@ export class ConnectionService {
       retryReads: stored.retryReads
     })
   }
+}
+
+function nonEmpty(value: string | undefined): string | undefined {
+  return value !== undefined && value.length > 0 ? value : undefined
 }
 
 type DriverInputs = {

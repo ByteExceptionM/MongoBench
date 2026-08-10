@@ -28,6 +28,7 @@ import {
   ContextMenuTrigger
 } from '@/components/ui/context-menu'
 import { CreateDatabaseDialog } from '@/features/collection/CreateDatabaseDialog'
+import { notifyPinnedHostKey } from '@/features/connections/pinnedHostKeyToast'
 import { DatabaseGroup } from './DatabaseGroup'
 import type { ConnectionConfig } from '@shared/types'
 
@@ -77,8 +78,9 @@ export function ConnectionGroup({
 
   const connectMutation = useMutation({
     mutationFn: () => api.connections.connect(connection.id),
-    onSuccess: () => {
+    onSuccess: (result) => {
       markConnected(connection.id)
+      notifyPinnedHostKey(result)
       void queryClient.invalidateQueries({ queryKey: queryKeys.databases(connection.id) })
     },
     onError: (e: unknown) => {
