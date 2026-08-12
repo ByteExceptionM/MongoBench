@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useMemo, useState } from 'react'
+import { type FormEvent, type KeyboardEvent, useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
@@ -395,6 +395,15 @@ function CreateIndexForm({
   const [showAdvanced, setShowAdvanced] = useState(false)
   const queryClient = useQueryClient()
 
+  // Sample a handful of documents to offer their field paths as completions.
+  // Best-effort: an empty or failed sample just means no suggestions.
+  const fieldPathsQuery = useQuery({
+    queryKey: queryKeys.fieldPaths(connectionId, db, coll),
+    queryFn: () => api.query.find({ connectionId, db, coll, skip: 0, limit: 50 }),
+    select: (res) => collectFieldPaths(res.documents.map((d) => d.data))
+  })
+  const fieldSuggestions = fieldPathsQuery.data ?? []
+
   const hasText = state.rows.some((r) => r.type === 'text')
   const hasGeoSphere = state.rows.some((r) => r.type === '2dsphere')
   const hasGeo2d = state.rows.some((r) => r.type === '2d')
@@ -499,12 +508,10 @@ function CreateIndexForm({
         <div className="grid gap-2">
           {state.rows.map((row, i) => (
             <div key={i} className="flex items-center gap-2">
-              <Input
+              <FieldPathInput
                 value={row.field}
-                onChange={(e) => updateRow(i, { field: e.target.value })}
-                placeholder="field.path  (use foo.$**  for wildcard)"
-                spellCheck={false}
-                className="flex-1 font-mono"
+                onChange={(field) => updateRow(i, { field })}
+                suggestions={fieldSuggestions}
                 autoFocus={i === 0}
               />
               <div className="w-44">
@@ -851,6 +858,145 @@ function EjsonField({
       {parseError && <p className="text-xs text-destructive">{parseError}</p>}
     </div>
   )
+}
+
+/**
+ * Field-path input with completion from sampled documents. Tab or Enter
+ * accepts the highlighted suggestion, arrow keys navigate, Escape closes
+ * the list (without closing the surrounding dialog).
+ */
+function FieldPathInput({
+  value,
+  onChange,
+  suggestions,
+  autoFocus
+}: {
+  value: string
+  onChange: (v: string) => void
+  suggestions: string[]
+  autoFocus?: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const [active, setActive] = useState(0)
+
+  const matches = useMemo(() => {
+    const needle = value.trim().toLowerCase()
+    const pool = needle ? suggestions.filter((s) => s.toLowerCase().includes(needle)) : suggestions
+    const sorted = needle
+      ? [...pool].sort((a, b) => {
+          const aPrefix = a.toLowerCase().startsWith(needle) ? 0 : 1
+          const bPrefix = b.toLowerCase().startsWith(needle) ? 0 : 1
+          return aPrefix - bPrefix || a.localeCompare(b)
+        })
+      : pool
+    // Nothing left to complete once the value matches the only candidate.
+    if (sorted.length === 1 && sorted[0] === value.trim()) return []
+    return sorted.slice(0, 50)
+  }, [value, suggestions])
+
+  useEffect(() => {
+    setActive(0)
+  }, [value])
+
+  const accept = (s: string) => {
+    onChange(s)
+    setOpen(false)
+  }
+
+  const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (!open || matches.length === 0) return
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      setActive((i) => (i + 1) % matches.length)
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      setActive((i) => (i - 1 + matches.length) % matches.length)
+    } else if (e.key === 'Tab' || e.key === 'Enter') {
+      e.preventDefault()
+      accept(matches[active] ?? matches[0]!)
+    } else if (e.key === 'Escape') {
+      e.preventDefault()
+      e.stopPropagation()
+      setOpen(false)
+    }
+  }
+
+  return (
+    <div className="relative flex-1">
+      <Input
+        value={value}
+        onChange={(e) => {
+          onChange(e.target.value)
+          setOpen(true)
+        }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setOpen(false)}
+        onKeyDown={onKeyDown}
+        placeholder="field.path  (use foo.$**  for wildcard)"
+        spellCheck={false}
+        className="w-full font-mono"
+        autoFocus={autoFocus}
+        role="combobox"
+        aria-expanded={open && matches.length > 0}
+        aria-autocomplete="list"
+      />
+      {open && matches.length > 0 && (
+        <ul
+          className="absolute left-0 right-0 top-full z-50 mt-1 max-h-40 overflow-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
+          role="listbox"
+          // Keep focus in the input so onBlur doesn't close the list
+          // before an option click registers.
+          onMouseDown={(e) => e.preventDefault()}
+        >
+          {matches.map((s, i) => (
+            <li
+              key={s}
+              role="option"
+              aria-selected={i === active}
+              onMouseEnter={() => setActive(i)}
+              onClick={() => accept(s)}
+              className={cn(
+                'cursor-pointer rounded-sm px-2 py-1 font-mono text-xs',
+                i === active ? 'bg-accent text-accent-foreground' : 'text-foreground'
+              )}
+            >
+              {s}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+const MAX_FIELD_PATH_DEPTH = 4
+
+/**
+ * Distinct dot-notation field paths across the sampled documents, sorted.
+ * `data` is relaxed EJSON, so objects whose keys all start with `$`
+ * (e.g. { $oid }, { $date }) are type wrappers, not subdocuments. Array
+ * elements share their parent path, matching how indexes address them.
+ */
+function collectFieldPaths(docs: Array<Record<string, unknown>>): string[] {
+  const paths = new Set<string>()
+  const visit = (value: unknown, prefix: string, depth: number): void => {
+    if (depth > MAX_FIELD_PATH_DEPTH || value === null || typeof value !== 'object') return
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item, prefix, depth)
+      return
+    }
+    const obj = value as Record<string, unknown>
+    const keys = Object.keys(obj)
+    if (prefix && keys.length > 0 && keys.every((k) => k.startsWith('$'))) return
+    for (const key of keys) {
+      if (key.startsWith('$')) continue
+      const path = prefix ? `${prefix}.${key}` : key
+      paths.add(path)
+      visit(obj[key], path, depth + 1)
+    }
+  }
+  for (const doc of docs) visit(doc, '', 0)
+  return Array.from(paths).sort((a, b) => a.localeCompare(b))
 }
 
 function validateForm(state: FormState, ttlEligible: boolean): string | null {

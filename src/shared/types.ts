@@ -13,11 +13,7 @@
 export type AuthMechanism = 'SCRAM-SHA-256' | 'SCRAM-SHA-1' | 'DEFAULT'
 
 export type ReadPreference =
-  | 'primary'
-  | 'primaryPreferred'
-  | 'secondary'
-  | 'secondaryPreferred'
-  | 'nearest'
+  'primary' | 'primaryPreferred' | 'secondary' | 'secondaryPreferred' | 'nearest'
 
 /**
  * Client-side UUID display preference.
