@@ -34,6 +34,8 @@ export const queryKeys = {
     ['collection-stats', connectionId, db, coll] as const,
   indexes: (connectionId: string, db: string, coll: string) =>
     ['indexes', connectionId, db, coll] as const,
+  fieldPaths: (connectionId: string, db: string, coll: string) =>
+    ['field-paths', connectionId, db, coll] as const,
   users: (connectionId: string, db: string) => ['users', connectionId, db] as const,
   serverStats: (connectionId: string) => ['server-stats', connectionId] as const,
   find: (
