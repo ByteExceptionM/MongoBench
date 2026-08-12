@@ -48,9 +48,7 @@ type RowMenuState = {
 }
 
 type PendingDelete =
-  | { kind: 'one'; envelope: DocumentEnvelope }
-  | { kind: 'many'; ids: string[] }
-  | null
+  { kind: 'one'; envelope: DocumentEnvelope } | { kind: 'many'; ids: string[] } | null
 
 export function DocumentTable({
   documents,
@@ -779,8 +777,7 @@ function Cell({
 const OID_RE = /^[a-f0-9]{24}$/i
 
 type ExtractedRef =
-  | { kind: 'oid'; oid: string }
-  | { kind: 'dbref'; ref: string; oid: string; db?: string }
+  { kind: 'oid'; oid: string } | { kind: 'dbref'; ref: string; oid: string; db?: string }
 
 /** Returns the hex string when `value` is an EJSON ObjectId, else null. */
 function objectIdOf(value: unknown): string | null {

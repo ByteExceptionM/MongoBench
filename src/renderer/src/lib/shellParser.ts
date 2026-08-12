@@ -32,8 +32,7 @@ export type ShellOp =
   | { kind: 'aggregate'; pipeline: string }
 
 export type ShellParseResult =
-  | { ok: true; coll: string; op: ShellOp }
-  | { ok: false; error: string }
+  { ok: true; coll: string; op: ShellOp } | { ok: false; error: string }
 
 const HEAD_RE = /^\s*db\s*\.\s*([A-Za-z_$][\w.$]*)\s*\.\s*([A-Za-z_$][\w$]*)\s*\(/
 

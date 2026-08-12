@@ -167,8 +167,7 @@ export class DatabaseService {
       : undefined
 
     const docMetrics = (status['metrics'] as Record<string, unknown> | undefined)?.['document'] as
-      | Record<string, unknown>
-      | undefined
+      Record<string, unknown> | undefined
     const documents = {
       inserted: numberOr(docMetrics?.['inserted'], 0),
       returned: numberOr(docMetrics?.['returned'], 0),
@@ -186,8 +185,7 @@ export class DatabaseService {
     }
 
     const cursorMetrics = (status['metrics'] as Record<string, unknown> | undefined)?.['cursor'] as
-      | Record<string, unknown>
-      | undefined
+      Record<string, unknown> | undefined
     const cursorOpen = cursorMetrics?.['open'] as Record<string, unknown> | undefined
     const cursors = {
       open: numberOr(cursorOpen?.['total'], 0),

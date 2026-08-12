@@ -595,7 +595,8 @@ function PasswordGeneratorPanel({
   return (
     <div className="grid gap-3 rounded-md border bg-card p-3">
       <div className="flex items-center gap-1.5">
-        <div className="min-w-0 flex-1 truncate rounded-md border bg-background px-3 py-1.5 font-mono text-xs">
+        {/* w-0 + flex-1: keeps the password's intrinsic width from widening the dialog's grid tracks */}
+        <div className="w-0 flex-1 truncate rounded-md border bg-background px-3 py-1.5 font-mono text-xs">
           {value.length > 0 ? (
             value
           ) : (
