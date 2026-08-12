@@ -495,9 +495,7 @@ function ErrorTag({ title }: { title: string }) {
 }
 
 type ObjectStatus =
-  | { kind: 'empty' }
-  | { kind: 'ok'; ejson: string }
-  | { kind: 'invalid'; error: string }
+  { kind: 'empty' } | { kind: 'ok'; ejson: string } | { kind: 'invalid'; error: string }
 
 function parseObjectStatus(value: string): ObjectStatus {
   const trimmed = value.trim()
@@ -511,9 +509,7 @@ function parseObjectStatus(value: string): ObjectStatus {
 }
 
 type PipelineStatus =
-  | { kind: 'empty' }
-  | { kind: 'ok'; ejson: string }
-  | { kind: 'invalid'; error: string }
+  { kind: 'empty' } | { kind: 'ok'; ejson: string } | { kind: 'invalid'; error: string }
 
 function parsePipelineStatus(value: string): PipelineStatus {
   const trimmed = value.trim()

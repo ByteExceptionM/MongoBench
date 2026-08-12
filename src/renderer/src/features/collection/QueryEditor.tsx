@@ -221,18 +221,16 @@ function ensureProviderRegistered(): void {
           position.lineNumber,
           position.column
         )
-        const suggestions = buildMongoCompletions().map(
-          (c): monaco.languages.CompletionItem => ({
-            label: c.label,
-            kind: c.kind ?? monaco.languages.CompletionItemKind.Keyword,
-            insertText: c.insertText,
-            insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
-            documentation: { value: c.doc },
-            detail: c.detail,
-            range,
-            sortText: c.sortText ?? c.label
-          })
-        )
+        const suggestions = buildMongoCompletions().map((c): monaco.languages.CompletionItem => ({
+          label: c.label,
+          kind: c.kind ?? monaco.languages.CompletionItemKind.Keyword,
+          insertText: c.insertText,
+          insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+          documentation: { value: c.doc },
+          detail: c.detail,
+          range,
+          sortText: c.sortText ?? c.label
+        }))
         return { suggestions }
       }
 

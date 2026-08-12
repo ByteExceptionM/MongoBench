@@ -21,8 +21,7 @@ export class IndexService {
 
     const sizes =
       ((statsCursor[0]?.['storageStats'] as Record<string, unknown> | undefined)?.['indexSizes'] as
-        | Record<string, number>
-        | undefined) ?? {}
+        Record<string, number> | undefined) ?? {}
 
     return raw.map((info) =>
       mapIndex(info as Record<string, unknown>, sizes[info['name'] as string])
