@@ -1,7 +1,18 @@
 import { type FormEvent, useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { ArrowLeft, KeyRound, Loader2, Plus, ServerCrash, Trash2, UserCog } from 'lucide-react'
+import {
+  ArrowLeft,
+  Copy,
+  KeyRound,
+  Loader2,
+  Plus,
+  RefreshCw,
+  ServerCrash,
+  Trash2,
+  UserCog,
+  Wand2
+} from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -24,6 +35,15 @@ import {
   AlertDialogTitle
 } from '@/components/ui/alert-dialog'
 import { api, ApiError } from '@/lib/api'
+import {
+  CHARSETS,
+  DEFAULT_OPTIONS,
+  generatePassword,
+  MAX_LENGTH,
+  MIN_LENGTH,
+  type CharsetKey,
+  type PasswordOptions
+} from '@/lib/passwordGenerator'
 import { queryKeys } from '@/lib/queryClient'
 import { cn } from '@/lib/utils'
 import type { DatabaseUser, DatabaseUserRole } from '@shared/types'
@@ -316,6 +336,7 @@ function UserForm({
 
   const [username, setUsername] = useState(initial.username)
   const [password, setPassword] = useState('')
+  const [generatorOpen, setGeneratorOpen] = useState(false)
   const [selectedRoles, setSelectedRoles] = useState<Set<string>>(new Set(initial.selectedRoles))
   const [customRoles, setCustomRoles] = useState(initial.customRoles)
   const [serverError, setServerError] = useState<string | null>(null)
@@ -434,16 +455,36 @@ function UserForm({
             <KeyRound className="h-3 w-3" />
             {mode === 'edit' ? 'New password (optional)' : 'Password'}
           </Label>
-          <Input
-            id="user-pwd"
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            autoComplete="new-password"
-            placeholder={mode === 'edit' ? 'Leave blank to keep current' : ''}
-          />
+          <div className="flex gap-1.5">
+            <Input
+              id="user-pwd"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete="new-password"
+              placeholder={mode === 'edit' ? 'Leave blank to keep current' : ''}
+            />
+            <Button
+              type="button"
+              size="icon"
+              variant={generatorOpen ? 'secondary' : 'outline'}
+              className="shrink-0"
+              onClick={() => {
+                if (!generatorOpen && password.length === 0) {
+                  setPassword(generatePassword(DEFAULT_OPTIONS))
+                }
+                setGeneratorOpen(!generatorOpen)
+              }}
+              aria-label="Toggle password generator"
+              title="Generate password"
+            >
+              <Wand2 className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
       </div>
+
+      {generatorOpen && <PasswordGeneratorPanel value={password} onChange={setPassword} />}
 
       <div className="grid gap-2">
         <Label className="text-[10px] uppercase tracking-wider">
@@ -509,5 +550,113 @@ function UserForm({
         </Button>
       </DialogFooter>
     </form>
+  )
+}
+
+const CHARSET_LABEL: Record<CharsetKey, string> = {
+  lowercase: 'a-z',
+  uppercase: 'A-Z',
+  digits: '0-9',
+  symbols: '!@#$'
+}
+
+function PasswordGeneratorPanel({
+  value,
+  onChange
+}: {
+  value: string
+  onChange: (password: string) => void
+}) {
+  const [options, setOptions] = useState<PasswordOptions>(DEFAULT_OPTIONS)
+
+  const apply = (next: PasswordOptions) => {
+    setOptions(next)
+    onChange(generatePassword(next))
+  }
+
+  const toggleCharset = (key: CharsetKey) => {
+    const next: PasswordOptions = {
+      ...options,
+      charsets: { ...options.charsets, [key]: !options.charsets[key] }
+    }
+    if (!Object.values(next.charsets).some(Boolean)) return
+    apply(next)
+  }
+
+  const onCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(value)
+      toast.success('Password copied')
+    } catch {
+      toast.error('Clipboard write blocked')
+    }
+  }
+
+  return (
+    <div className="grid gap-3 rounded-md border bg-card p-3">
+      <div className="flex items-center gap-1.5">
+        <div className="min-w-0 flex-1 truncate rounded-md border bg-background px-3 py-1.5 font-mono text-xs">
+          {value.length > 0 ? (
+            value
+          ) : (
+            <span className="italic text-muted-foreground">No password</span>
+          )}
+        </div>
+        <Button
+          type="button"
+          size="icon"
+          variant="ghost"
+          className="h-7 w-7 shrink-0"
+          onClick={() => apply(options)}
+          aria-label="Regenerate password"
+          title="Regenerate"
+        >
+          <RefreshCw className="h-3.5 w-3.5" />
+        </Button>
+        <Button
+          type="button"
+          size="icon"
+          variant="ghost"
+          className="h-7 w-7 shrink-0"
+          onClick={onCopy}
+          disabled={value.length === 0}
+          aria-label="Copy password"
+          title="Copy"
+        >
+          <Copy className="h-3.5 w-3.5" />
+        </Button>
+      </div>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <label className="flex items-center gap-2 text-xs text-muted-foreground">
+          Length
+          <input
+            type="range"
+            min={MIN_LENGTH}
+            max={MAX_LENGTH}
+            value={options.length}
+            onChange={(e) => apply({ ...options, length: Number(e.target.value) })}
+            className="w-32 accent-primary"
+          />
+          <span className="w-7 font-mono text-foreground">{options.length}</span>
+        </label>
+        {(Object.keys(CHARSETS) as CharsetKey[]).map((key) => (
+          <label
+            key={key}
+            className={cn(
+              'flex cursor-pointer items-center gap-2 text-xs',
+              options.charsets[key] ? 'text-foreground' : 'text-muted-foreground'
+            )}
+          >
+            <input
+              type="checkbox"
+              checked={options.charsets[key]}
+              onChange={() => toggleCharset(key)}
+              className="accent-primary"
+            />
+            <span className="font-mono">{CHARSET_LABEL[key]}</span>
+          </label>
+        ))}
+      </div>
+    </div>
   )
 }
