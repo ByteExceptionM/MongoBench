@@ -85,7 +85,7 @@
     "tailwindcss-animate": "^1.0.7",
     "typescript": "^5.6.2",
     "vite": "^7.0.0",
-    "vitest": "^4.0.0"
+    "vitest": "^4.1.12"
   },
   "overrides": {
     "dompurify": "^3.4.13"
