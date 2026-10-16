@@ -1,19 +1,26 @@
-import { type FormEvent, useEffect, useMemo, useState } from 'react'
-import { ArrowDownUp, Eye, Play, Wand2, X, XCircle } from 'lucide-react'
+import { type FormEvent, useMemo, useState } from 'react'
+import { ArrowDownUp, Eye, Loader2, PenLine, Play, Wand2, X, XCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Tooltip } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
+import { compilePipelineSource } from '@/lib/aggregationPipeline'
+import type { CompletionBinding } from '@/lib/completion/monacoAdapter'
+import type { CompletionEnv } from '@/lib/completion/useCompletionEnv'
+import { formatMongoSource } from '@/lib/mongoFormat'
 import { parseMongoQuery } from '@/lib/mongoQueryLang'
-import { parseShellCommand, type ShellParseResult } from '@/lib/shellParser'
-import type { CollectionTab, QueryMode, QueryPatch } from '@/store/tabs'
-import type { DocumentEnvelope, UuidEncoding } from '@shared/types'
+import type { SerializeOptions } from '@/lib/mongoQuerySerialize'
+import { queryModelUri } from '@/lib/queryModelUri'
+import type { CompiledFind, ShellWriteCommand } from '@/lib/queryRun'
+import {
+  formatShellCommand,
+  parseShellCommand,
+  shellCollectionAccessor,
+  writeTargetName
+} from '@/lib/shellParser'
+import { useTabsStore, type CollectionTab, type QueryDraft, type QueryMode } from '@/store/tabs'
+import type { UuidEncoding } from '@shared/types'
 import { ExportButton } from './ExportButton'
-import { QueryEditor, setDocumentFieldNames } from './QueryEditor'
-
-const EMPTY_OBJECT = '{}'
-const EMPTY_ARRAY = '[]'
-const objOrDefault = (s: string): string => (s.trim().length === 0 ? EMPTY_OBJECT : s)
-const arrOrDefault = (s: string): string => (s.trim().length === 0 ? EMPTY_ARRAY : s)
+import { QueryEditor } from './QueryEditor'
 
 const MODES: ReadonlyArray<{ id: QueryMode; label: string }> = [
   { id: 'simple', label: 'Simple' },
@@ -21,119 +28,115 @@ const MODES: ReadonlyArray<{ id: QueryMode; label: string }> = [
   { id: 'shell', label: 'Shell' }
 ]
 
-export function QueryToolbar({
-  tab,
-  onApply,
-  onCancel,
-  loading,
-  documents,
-  uuidEncoding,
-  timezone,
-  compiledFilter,
-  compiledProjection,
-  compiledSort
-}: {
+type ToolbarProps = {
   tab: CollectionTab
-  onApply: (patch: QueryPatch) => void
   onCancel: () => void
+  /** Runs a shell draft that writes; reads run through the store's `run`. */
+  onRunWrite: (command: ShellWriteCommand) => void
   loading: boolean
-  documents: DocumentEnvelope[]
+  /** The shown shell write is running; it can't be cancelled. */
+  writing: boolean
+  completionEnv: CompletionEnv
   uuidEncoding: UuidEncoding
   timezone: string
-  compiledFilter: string | null
-  compiledProjection: string | null
-  compiledSort: string | null
-}) {
-  const [filter, setFilter] = useState(() => objOrDefault(tab.filter))
-  const [projection, setProjection] = useState(() => objOrDefault(tab.projection))
-  const [sort, setSort] = useState(() => objOrDefault(tab.sort))
-  const [pipeline, setPipeline] = useState(() => arrOrDefault(tab.pipeline))
-  const [shell, setShell] = useState(() => tab.shell)
-  const [limit, setLimit] = useState(tab.limit > 0 ? String(tab.limit) : '')
+  /** The applied Simple query, exported as is; null when it doesn't compile. */
+  exportFind: CompiledFind | null
+  /** Rows of the visible Simple page; seeds the export's document count. */
+  exportDocCount: number
+}
 
-  useEffect(() => {
-    setFilter(objOrDefault(tab.filter))
-    setProjection(objOrDefault(tab.projection))
-    setSort(objOrDefault(tab.sort))
-    setPipeline(arrOrDefault(tab.pipeline))
-    setShell(tab.shell)
-    setLimit(tab.limit > 0 ? String(tab.limit) : '')
-  }, [tab.id, tab.filter, tab.projection, tab.sort, tab.pipeline, tab.shell, tab.limit])
+export function QueryToolbar(props: ToolbarProps) {
+  const draft = useTabsStore((s) => s.drafts[props.tab.id])
+  // Tabs and drafts are created and removed in one store update.
+  if (!draft) return null
+  return <QueryForm {...props} draft={draft} />
+}
 
-  // Cache distinct top-level field names from the most recent fetch so
-  // the editor can offer them as completions in any input.
-  useEffect(() => {
-    const names = new Set<string>()
-    for (const env of documents) {
-      for (const key of Object.keys(env.data)) names.add(key)
-    }
-    setDocumentFieldNames(names)
-  }, [documents])
+function QueryForm({
+  tab,
+  draft,
+  onCancel,
+  onRunWrite,
+  loading,
+  writing,
+  completionEnv,
+  uuidEncoding,
+  timezone,
+  exportFind,
+  exportDocCount
+}: ToolbarProps & { draft: QueryDraft }) {
+  const setDraft = useTabsStore((s) => s.setDraft)
+  const run = useTabsStore((s) => s.run)
+  const setFilter = (filter: string) => setDraft(tab.id, { filter })
+  const setProjection = (projection: string) => setDraft(tab.id, { projection })
+  const setSort = (sort: string) => setDraft(tab.id, { sort })
+  const setPipeline = (pipeline: string) => setDraft(tab.id, { pipeline })
+  const setShell = (shell: string) => setDraft(tab.id, { shell })
+  const setLimit = (limit: string) => setDraft(tab.id, { limit })
 
-  const filterStatus = useMemo(() => parseObjectStatus(filter), [filter])
-  const projectionStatus = useMemo(() => parseObjectStatus(projection), [projection])
-  const sortStatus = useMemo(() => parseObjectStatus(sort), [sort])
-  const pipelineStatus = useMemo(() => parsePipelineStatus(pipeline), [pipeline])
-  const shellStatus = useMemo(() => parseShellStatus(shell, tab.coll), [shell, tab.coll])
+  const filterStatus = useMemo(() => parseObjectStatus(draft.filter), [draft.filter])
+  const projectionStatus = useMemo(() => parseObjectStatus(draft.projection), [draft.projection])
+  const sortStatus = useMemo(() => parseObjectStatus(draft.sort), [draft.sort])
+  const pipelineStatus = useMemo(() => parsePipelineStatus(draft.pipeline), [draft.pipeline])
+  const { status: shellStatus, write: shellWrite } = useMemo(
+    () => parseShellDraft(draft.shell),
+    [draft.shell]
+  )
+  const write = draft.mode === 'shell' ? shellWrite : null
 
-  const simpleInvalid =
-    filterStatus.kind === 'invalid' ||
-    projectionStatus.kind === 'invalid' ||
-    sortStatus.kind === 'invalid'
-  const modeInvalid =
-    tab.mode === 'simple'
-      ? simpleInvalid
-      : tab.mode === 'aggregation'
-        ? pipelineStatus.kind !== 'ok'
-        : shellStatus.kind !== 'ok'
+  const blockedReason =
+    draft.mode === 'simple'
+      ? (invalidReason('Filter', filterStatus) ??
+        invalidReason('Projection', projectionStatus) ??
+        invalidReason('Sort', sortStatus))
+      : draft.mode === 'aggregation'
+        ? pipelineStatus.kind === 'empty'
+          ? 'Add a pipeline, e.g. [{ $match: { … } }]'
+          : invalidReason(null, pipelineStatus)
+        : shellStatus.kind === 'empty'
+          ? `Type a command, e.g. ${shellCollectionAccessor(tab.coll)}.find({})`
+          : invalidReason(null, shellStatus)
 
   const apply = (e?: FormEvent) => {
     e?.preventDefault()
-    if (modeInvalid || loading) return
-    // Bumping runEpoch guarantees a fresh fetch even when none of the
-    // mode-specific params changed (e.g. the user pressed Run twice on
-    // the same filter). Tab switches don't go through here.
-    const runEpoch = tab.runEpoch + 1
-    if (tab.mode === 'simple') {
-      const limitNum = Number.parseInt(limit, 10)
-      const nextLimit = Number.isFinite(limitNum) && limitNum > 0 ? limitNum : 0
-      onApply({ filter, projection, sort, skip: 0, limit: nextLimit, runEpoch })
-    } else if (tab.mode === 'aggregation') {
-      onApply({ pipeline, skip: 0, runEpoch })
-    } else {
-      onApply({ shell, skip: 0, runEpoch })
-    }
+    if (blockedReason !== null || loading || writing) return
+    if (write) onRunWrite(write)
+    else run(tab.id)
   }
 
   const setMode = (mode: QueryMode) => {
-    if (mode === tab.mode) return
-    onApply({ mode })
+    if (mode !== draft.mode) setDraft(tab.id, { mode })
   }
 
-  const formatObject = (status: ObjectStatus, setter: (next: string) => void): void => {
-    if (status.kind !== 'ok') return
-    try {
-      setter(JSON.stringify(JSON.parse(status.ejson), null, 2))
-    } catch {
-      // ok-status guarantees parseable EJSON.
-    }
+  const formatOptions: SerializeOptions = { timezone, uuidEncoding, indent: 2, printWidth: 80 }
+  const formatSource = (value: string, setter: (next: string) => void): void => {
+    const formatted = formatMongoSource(value, formatOptions)
+    if (formatted !== null) setter(formatted)
   }
-  const formatPipeline = () => {
-    if (pipelineStatus.kind !== 'ok') return
-    try {
-      setPipeline(JSON.stringify(JSON.parse(pipelineStatus.ejson), null, 2))
-    } catch {
-      // unreachable
-    }
+  const formatShell = (): void => {
+    const formatted = formatShellCommand(draft.shell, formatOptions)
+    if (formatted !== null) setShell(formatted)
   }
 
   return (
     <form onSubmit={apply} className="border-b bg-card/30">
       <div className="flex h-12 items-stretch justify-between border-b pr-4">
-        <ModeTabs current={tab.mode} onChange={setMode} />
+        <ModeTabs current={draft.mode} onChange={setMode} />
         <div className="flex items-center gap-2">
-          {tab.mode === 'simple' && <LimitInput value={limit} onChange={setLimit} />}
-          {loading ? (
+          {draft.mode === 'simple' && <LimitInput value={draft.limit} onChange={setLimit} />}
+          {writing ? (
+            <Tooltip content="A write can't be cancelled; the server finishes it">
+              <Button
+                type="button"
+                size="sm"
+                aria-disabled
+                className="h-8 shrink-0 cursor-not-allowed bg-amber-400/60 px-3 text-amber-950 hover:bg-amber-400/60"
+              >
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Writing…
+              </Button>
+            </Tooltip>
+          ) : loading ? (
             <Tooltip content="Cancel">
               <Button
                 type="button"
@@ -147,64 +150,99 @@ export function QueryToolbar({
               </Button>
             </Tooltip>
           ) : (
-            <Tooltip content="Run · ⌘/Ctrl-Enter">
-              <Button type="submit" size="sm" className="h-8 shrink-0 px-3">
-                <Play className="h-3.5 w-3.5" />
-                Run
+            <Tooltip
+              content={
+                blockedReason ??
+                (write
+                  ? `Writes to ${writeTargetName(write.op.writes, tab.db)} · ⌘/Ctrl-Enter`
+                  : 'Run · ⌘/Ctrl-Enter')
+              }
+            >
+              <Button
+                type="submit"
+                size="sm"
+                // A double-click's second click would run again once a fast run has finished.
+                onClick={(e) => {
+                  if (e.detail > 1) e.preventDefault()
+                }}
+                // Stays focusable and hoverable so the tooltip can say why Run is blocked.
+                aria-disabled={blockedReason !== null}
+                className={cn(
+                  'h-8 shrink-0 px-3',
+                  write && 'bg-amber-400 text-amber-950 hover:bg-amber-400/90',
+                  blockedReason !== null && 'cursor-not-allowed opacity-50'
+                )}
+              >
+                {write ? <PenLine className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
+                {write ? 'Run write' : 'Run'}
               </Button>
             </Tooltip>
           )}
-          {tab.mode === 'simple' && (
+          {draft.mode === 'simple' && (
             <ExportButton
               connectionId={tab.connectionId}
               db={tab.db}
               coll={tab.coll}
-              filter={compiledFilter}
-              projection={compiledProjection}
-              sort={compiledSort}
-              currentDocCount={documents.length}
+              filter={exportFind?.filter ?? null}
+              projection={exportFind?.projection ?? null}
+              sort={exportFind?.sort ?? null}
+              currentDocCount={exportDocCount}
               uuidEncoding={uuidEncoding}
               timezone={timezone}
-              disabled={simpleInvalid}
+              disabled={exportFind === null}
             />
           )}
         </div>
       </div>
 
       <div className="grid gap-1.5 px-4 py-2">
-        {tab.mode === 'simple' && (
+        {draft.mode === 'simple' && (
           <SimpleBody
-            filter={filter}
+            tabId={tab.id}
+            completionEnv={completionEnv}
+            filter={draft.filter}
             setFilter={setFilter}
             filterStatus={filterStatus}
-            sort={sort}
+            sort={draft.sort}
             setSort={setSort}
             sortStatus={sortStatus}
-            projection={projection}
+            projection={draft.projection}
             setProjection={setProjection}
             projectionStatus={projectionStatus}
             onSubmit={() => apply()}
-            formatObject={formatObject}
+            formatSource={formatSource}
           />
         )}
 
-        {tab.mode === 'aggregation' && (
-          <AggregationBody
-            pipeline={pipeline}
-            setPipeline={setPipeline}
+        {draft.mode === 'aggregation' && (
+          <SourceEditor
+            modelPath={queryModelUri(tab.id, 'pipeline')}
+            completion={{ kind: 'pipeline', env: completionEnv }}
+            value={draft.pipeline}
+            onChange={setPipeline}
             status={pipelineStatus}
             onSubmit={() => apply()}
-            onFormat={formatPipeline}
+            onFormat={() => formatSource(draft.pipeline, setPipeline)}
+            minHeight={120}
+            maxHeight={400}
+            placeholder={
+              '[\n  { $match: { … } },\n  { $group: { _id: "$type", n: { $sum: 1 } } }\n]'
+            }
           />
         )}
 
-        {tab.mode === 'shell' && (
-          <ShellBody
-            coll={tab.coll}
-            shell={shell}
-            setShell={setShell}
+        {draft.mode === 'shell' && (
+          <SourceEditor
+            modelPath={queryModelUri(tab.id, 'shell')}
+            completion={{ kind: 'shell', env: completionEnv }}
+            value={draft.shell}
+            onChange={setShell}
             status={shellStatus}
             onSubmit={() => apply()}
+            onFormat={formatShell}
+            minHeight={60}
+            maxHeight={240}
+            placeholder={`${shellCollectionAccessor(tab.coll)}.find({ … }).sort({ … }).limit(50)`}
           />
         )}
       </div>
@@ -241,6 +279,8 @@ function ModeTabs({ current, onChange }: { current: QueryMode; onChange: (m: Que
 }
 
 function SimpleBody({
+  tabId,
+  completionEnv,
   filter,
   setFilter,
   filterStatus,
@@ -251,19 +291,21 @@ function SimpleBody({
   setProjection,
   projectionStatus,
   onSubmit,
-  formatObject
+  formatSource
 }: {
+  tabId: string
+  completionEnv: CompletionEnv
   filter: string
   setFilter: (next: string) => void
-  filterStatus: ObjectStatus
+  filterStatus: SourceStatus
   sort: string
   setSort: (next: string) => void
-  sortStatus: ObjectStatus
+  sortStatus: SourceStatus
   projection: string
   setProjection: (next: string) => void
-  projectionStatus: ObjectStatus
+  projectionStatus: SourceStatus
   onSubmit: () => void
-  formatObject: (status: ObjectStatus, setter: (next: string) => void) => void
+  formatSource: (value: string, setter: (next: string) => void) => void
 }) {
   // Sort and Projection share their height: whichever editor's content is
   // taller pushes the shorter one to match. Each reports its natural
@@ -274,119 +316,50 @@ function SimpleBody({
 
   return (
     <>
-      <div className="min-w-0 flex-1">
-        <QueryEditor
-          value={filter}
-          onChange={(next) => setFilter(objOrDefault(next))}
-          onSubmit={onSubmit}
-          onFormat={() => formatObject(filterStatus, setFilter)}
-          hasError={filterStatus.kind === 'invalid'}
-          minHeight={32}
-          maxHeight={180}
-          placeholder='filter ·  { _id: ObjectId("…"), createdAt: { $gt: ISODate("2024-01-01") } }     ⌘/Ctrl-Enter to run'
-          actions={
-            <>
-              {filterStatus.kind === 'invalid' && <ErrorTag title={filterStatus.error} />}
-              <FormatButton
-                disabled={filterStatus.kind !== 'ok'}
-                onClick={() => formatObject(filterStatus, setFilter)}
-              />
-            </>
-          }
-        />
-      </div>
+      <SourceEditor
+        modelPath={queryModelUri(tabId, 'filter')}
+        completion={{ kind: 'filter', env: completionEnv }}
+        value={filter}
+        onChange={setFilter}
+        status={filterStatus}
+        onSubmit={onSubmit}
+        onFormat={() => formatSource(filter, setFilter)}
+        minHeight={32}
+        maxHeight={180}
+        placeholder='filter ·  { _id: ObjectId("…"), createdAt: { $gt: ISODate("2024-01-01") } }     ⌘/Ctrl-Enter to run'
+      />
 
       <div className="flex flex-wrap items-stretch gap-1.5">
         <OptionRow
+          modelPath={queryModelUri(tabId, 'sort')}
+          completion={{ kind: 'sort', env: completionEnv }}
           icon={<ArrowDownUp className="h-3 w-3" />}
           label="Sort"
           placeholder="{ createdAt: -1 }"
           value={sort}
           onChange={setSort}
           onSubmit={onSubmit}
-          onFormat={() => formatObject(sortStatus, setSort)}
+          onFormat={() => formatSource(sort, setSort)}
           status={sortStatus}
           minHeight={sharedRowH}
-          onContentHeight={setSortContentH}
+          onContentHeightChange={setSortContentH}
         />
         <OptionRow
+          modelPath={queryModelUri(tabId, 'projection')}
+          completion={{ kind: 'projection', env: completionEnv }}
           icon={<Eye className="h-3 w-3" />}
           label="Projection"
           placeholder="{ name: 1, _id: 0 }"
           value={projection}
           onChange={setProjection}
           onSubmit={onSubmit}
-          onFormat={() => formatObject(projectionStatus, setProjection)}
+          onFormat={() => formatSource(projection, setProjection)}
           status={projectionStatus}
           minHeight={sharedRowH}
-          onContentHeight={setProjContentH}
+          onContentHeightChange={setProjContentH}
         />
       </div>
     </>
-  )
-}
-
-function AggregationBody({
-  pipeline,
-  setPipeline,
-  status,
-  onSubmit,
-  onFormat
-}: {
-  pipeline: string
-  setPipeline: (next: string) => void
-  status: PipelineStatus
-  onSubmit: () => void
-  onFormat: () => void
-}) {
-  return (
-    <div className="min-w-0 flex-1">
-      <QueryEditor
-        value={pipeline}
-        onChange={(next) => setPipeline(arrOrDefault(next))}
-        onSubmit={onSubmit}
-        onFormat={onFormat}
-        hasError={status.kind === 'invalid'}
-        minHeight={120}
-        maxHeight={400}
-        placeholder={'[\n  { $match: { … } },\n  { $group: { _id: "$type", n: { $sum: 1 } } }\n]'}
-        actions={
-          <>
-            {status.kind === 'invalid' && <ErrorTag title={status.error} />}
-            <FormatButton disabled={status.kind !== 'ok'} onClick={onFormat} />
-          </>
-        }
-      />
-    </div>
-  )
-}
-
-function ShellBody({
-  coll,
-  shell,
-  setShell,
-  status,
-  onSubmit
-}: {
-  coll: string
-  shell: string
-  setShell: (next: string) => void
-  status: ShellStatus
-  onSubmit: () => void
-}) {
-  return (
-    <div className="min-w-0 flex-1">
-      <QueryEditor
-        value={shell}
-        onChange={setShell}
-        onSubmit={onSubmit}
-        hasError={status.kind === 'invalid'}
-        minHeight={60}
-        maxHeight={240}
-        placeholder={`db.${coll}.find({ … }).sort({ … }).limit(50)`}
-        actions={<>{status.kind === 'invalid' && <ErrorTag title={status.error} />}</>}
-      />
-    </div>
   )
 }
 
@@ -413,58 +386,54 @@ function LimitInput({ value, onChange }: { value: string; onChange: (next: strin
 function OptionRow({
   icon,
   label,
-  placeholder,
-  value,
-  onChange,
-  onSubmit,
-  onFormat,
-  status,
-  minHeight,
-  onContentHeight
-}: {
-  icon: React.ReactNode
-  label: string
-  placeholder: string
-  value: string
-  onChange: (next: string) => void
-  onSubmit: () => void
-  onFormat: () => void
-  status: ObjectStatus
-  minHeight: number
-  onContentHeight: (px: number) => void
-}) {
+  ...editor
+}: Omit<SourceEditorProps, 'maxHeight'> & { icon: React.ReactNode; label: string }) {
   return (
     <div className="flex min-w-0 flex-1 basis-[280px] items-stretch gap-1.5">
       <div className="flex shrink-0 items-center gap-1 rounded-md border border-input bg-muted/30 px-2 text-[10px] uppercase tracking-wider text-muted-foreground">
         {icon}
         {label}
       </div>
-      <div className="min-w-0 flex-1">
-        <QueryEditor
-          value={value}
-          onChange={(next) => onChange(objOrDefault(next))}
-          onSubmit={onSubmit}
-          onFormat={onFormat}
-          hasError={status.kind === 'invalid'}
-          minHeight={minHeight}
-          maxHeight={120}
-          placeholder={placeholder}
-          onContentHeightChange={onContentHeight}
-          actions={
-            <>
-              {status.kind === 'invalid' && <ErrorTag title={status.error} />}
-              <FormatButton disabled={status.kind !== 'ok'} onClick={onFormat} />
-            </>
-          }
-        />
-      </div>
+      <SourceEditor {...editor} maxHeight={120} />
+    </div>
+  )
+}
+
+type SourceEditorProps = {
+  modelPath: string
+  completion: CompletionBinding
+  value: string
+  onChange: (next: string) => void
+  status: SourceStatus
+  onSubmit: () => void
+  onFormat: () => void
+  minHeight: number
+  maxHeight: number
+  placeholder: string
+  onContentHeightChange?: (px: number) => void
+}
+
+function SourceEditor({ status, onFormat, ...editor }: SourceEditorProps) {
+  return (
+    <div className="min-w-0 flex-1">
+      <QueryEditor
+        {...editor}
+        onFormat={onFormat}
+        hasError={status.kind === 'invalid'}
+        actions={
+          <>
+            {status.kind === 'invalid' && <ErrorTag title={status.error} />}
+            <FormatButton disabled={status.kind !== 'ok'} onClick={onFormat} />
+          </>
+        }
+      />
     </div>
   )
 }
 
 function FormatButton({ disabled, onClick }: { disabled: boolean; onClick: () => void }) {
   return (
-    <Tooltip content="Format · Shift+Alt+F">
+    <Tooltip content="Format · Shift+Alt+F · removes comments">
       <button
         type="button"
         onClick={onClick}
@@ -494,10 +463,14 @@ function ErrorTag({ title }: { title: string }) {
   )
 }
 
-type ObjectStatus =
-  { kind: 'empty' } | { kind: 'ok'; ejson: string } | { kind: 'invalid'; error: string }
+type SourceStatus = { kind: 'empty' } | { kind: 'ok' } | { kind: 'invalid'; error: string }
 
-function parseObjectStatus(value: string): ObjectStatus {
+function invalidReason(label: string | null, status: SourceStatus): string | null {
+  if (status.kind !== 'invalid') return null
+  return label === null ? status.error : `${label}: ${status.error}`
+}
+
+function parseObjectStatus(value: string): SourceStatus {
   const trimmed = value.trim()
   if (trimmed.length === 0) return { kind: 'empty' }
   const result = parseMongoQuery(trimmed)
@@ -505,43 +478,19 @@ function parseObjectStatus(value: string): ObjectStatus {
   if (result.value === null || typeof result.value !== 'object' || Array.isArray(result.value)) {
     return { kind: 'invalid', error: 'Must be an object' }
   }
-  return { kind: 'ok', ejson: result.ejson }
+  return { kind: 'ok' }
 }
 
-type PipelineStatus =
-  { kind: 'empty' } | { kind: 'ok'; ejson: string } | { kind: 'invalid'; error: string }
-
-function parsePipelineStatus(value: string): PipelineStatus {
-  const trimmed = value.trim()
-  if (trimmed.length === 0) return { kind: 'empty' }
-  const result = parseMongoQuery(trimmed)
-  if (!result.ok) return { kind: 'invalid', error: result.error }
-  if (!Array.isArray(result.value)) {
-    return { kind: 'invalid', error: 'Must be an array of stage objects' }
-  }
-  for (const stage of result.value) {
-    if (typeof stage !== 'object' || stage === null || Array.isArray(stage)) {
-      return { kind: 'invalid', error: 'Each stage must be an object' }
-    }
-  }
-  return { kind: 'ok', ejson: result.ejson }
+function parsePipelineStatus(value: string): SourceStatus {
+  if (value.trim().length === 0) return { kind: 'empty' }
+  const result = compilePipelineSource(value)
+  return result.ok ? { kind: 'ok' } : { kind: 'invalid', error: result.error }
 }
 
-type ShellStatus =
-  | { kind: 'empty' }
-  | { kind: 'ok'; parsed: ShellParseResult & { ok: true } }
-  | { kind: 'invalid'; error: string }
-
-function parseShellStatus(value: string, expectedColl: string): ShellStatus {
-  const trimmed = value.trim()
-  if (trimmed.length === 0) return { kind: 'empty' }
-  const parsed = parseShellCommand(trimmed)
-  if (!parsed.ok) return { kind: 'invalid', error: parsed.error }
-  if (parsed.coll !== expectedColl) {
-    return {
-      kind: 'invalid',
-      error: `Collection mismatch: this tab is "${expectedColl}", command targets "${parsed.coll}"`
-    }
-  }
-  return { kind: 'ok', parsed }
+function parseShellDraft(value: string): { status: SourceStatus; write: ShellWriteCommand | null } {
+  if (value.trim().length === 0) return { status: { kind: 'empty' }, write: null }
+  const result = parseShellCommand(value)
+  if (!result.ok) return { status: { kind: 'invalid', error: result.error }, write: null }
+  const { coll, op } = result.command
+  return { status: { kind: 'ok' }, write: op.kind === 'write' ? { coll, op } : null }
 }

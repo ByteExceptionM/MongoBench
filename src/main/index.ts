@@ -8,6 +8,8 @@ const APP_ICON = app.isPackaged
 import log from 'electron-log/main'
 import { EventChannels } from './ipc/channels'
 import { registerIpcHandlers } from './ipc/router'
+import { opensInBrowser } from './lib/externalUrl'
+import { CloudflaredTunnelService } from './services/CloudflaredTunnelService'
 import { ConnectionService } from './services/ConnectionService'
 import { DatabaseService } from './services/DatabaseService'
 import { IndexService } from './services/IndexService'
@@ -71,14 +73,14 @@ function createWindow(): void {
   })
 
   window.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url)
+    if (opensInBrowser(url)) void shell.openExternal(url)
     return { action: 'deny' }
   })
 
   window.webContents.on('will-navigate', (event, url) => {
     if (url !== window.webContents.getURL()) {
       event.preventDefault()
-      void shell.openExternal(url)
+      if (opensInBrowser(url)) void shell.openExternal(url)
     }
   })
 
@@ -113,8 +115,11 @@ function createWindow(): void {
 app.whenReady().then(() => {
   const secrets = new SecretsStore()
   const repo = new ConnectionsRepository(secrets)
-  const tunnels = new SshTunnelService(new HostKeysStore())
-  const connections = new ConnectionService(repo, tunnels, (connectionId, reason) =>
+  const sshTunnels = new SshTunnelService(new HostKeysStore())
+  const cloudflared = new CloudflaredTunnelService((prompt) =>
+    pushToRenderer(EventChannels.CloudflaredLogin, prompt)
+  )
+  const connections = new ConnectionService(repo, sshTunnels, cloudflared, (connectionId, reason) =>
     pushToRenderer(EventChannels.ConnectionDropped, { connectionId, reason })
   )
   const databases = new DatabaseService(connections)
@@ -127,7 +132,16 @@ app.whenReady().then(() => {
   services.repo = repo
   services.connections = connections
 
-  registerIpcHandlers({ repo, connections, databases, queries, users, indexes, updater })
+  registerIpcHandlers({
+    repo,
+    connections,
+    databases,
+    queries,
+    users,
+    indexes,
+    updater,
+    cloudflared
+  })
 
   createWindow()
 

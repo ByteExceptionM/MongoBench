@@ -14,7 +14,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { api, ApiError } from '@/lib/api'
-import { queryKeys } from '@/lib/queryClient'
+import { queryKeys, removeNamespaceQueries } from '@/lib/queryClient'
 import { useTabsStore } from '@/store/tabs'
 
 type Props = {
@@ -54,6 +54,7 @@ export function RenameCollectionDialog({ open, connectionId, db, coll, onClose }
     mutationFn: () => api.collections.rename({ connectionId, db, coll, newName: name.trim() }),
     onSuccess: () => {
       renameTab(connectionId, db, coll, name.trim())
+      removeNamespaceQueries(queryClient, connectionId, db, coll)
       void queryClient.invalidateQueries({ queryKey: queryKeys.collections(connectionId, db) })
       toast.success(`Renamed to ${name.trim()}`)
       onClose()

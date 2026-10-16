@@ -4,16 +4,21 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { Duplex } from 'node:stream'
 import log from 'electron-log/main'
-import { Client, type ConnectConfig } from 'ssh2'
+import { Client, type Algorithms, type ConnectConfig } from 'ssh2'
+import ssh2Constants from 'ssh2/lib/protocol/constants'
 import type { PinnedHostKeyNotice, SshAuthMethod } from '@shared/types'
 import {
   findHostKeys,
   fingerprint,
+  isRevoked,
   keyMatches,
+  keyTypeOf,
+  orderHostKeyAlgorithms,
   parseKnownHosts,
   type KnownHostEntry
 } from '../lib/knownHosts'
 import { createSocks5Server, type Socks5Server } from '../lib/socks5'
+import type { Tunnel } from '../lib/tunnel'
 
 const READY_TIMEOUT_MS = 15_000
 /** Idle sessions get dropped by firewalls and by sshd's own timeouts. */
@@ -29,22 +34,6 @@ export type ResolvedSshTunnel = {
   privateKeyPath?: string
   password?: string
   passphrase?: string
-}
-
-/** What the driver needs to route through the tunnel. */
-export type TunnelProxyOptions = {
-  proxyHost: string
-  proxyPort: number
-  proxyUsername: string
-  proxyPassword: string
-}
-
-/** An open tunnel. The caller owns it and is responsible for closing it. */
-export type Tunnel = {
-  proxyOptions: TunnelProxyOptions
-  /** Set only when this open pinned a host key it had never seen. */
-  pinnedHostKey: PinnedHostKeyNotice | null
-  close: () => Promise<void>
 }
 
 export class SshConnectError extends Error {
@@ -103,6 +92,7 @@ export class SshTunnelService {
   /** `onDropped` fires when the session dies on its own, never on `close()`. */
   async open(config: ResolvedSshTunnel, onDropped?: (reason: string) => void): Promise<Tunnel> {
     const auth = await authConfig(config)
+    const knownHosts = await readKnownHosts(this.knownHostsPath)
     const client = new Client()
 
     // hostVerifier can only answer yes/no, so the reason is kept here to make
@@ -119,14 +109,16 @@ export class SshTunnelService {
     })
 
     try {
+      const algorithms = await this.hostKeyAlgorithms(knownHosts, config.host, config.port)
       client.connect({
         host: config.host,
         port: config.port,
         username: config.username,
         readyTimeout: READY_TIMEOUT_MS,
         keepaliveInterval: KEEPALIVE_INTERVAL_MS,
+        algorithms,
         hostVerifier: (key: Buffer, verify: (valid: boolean) => void): void => {
-          this.verifyHostKey(config.host, config.port, key)
+          this.verifyHostKey(knownHosts, config.host, config.port, key)
             .then((pinned) => {
               pinnedHostKey = pinned
               verify(true)
@@ -154,7 +146,7 @@ export class SshTunnelService {
         username: proxyUsername,
         password: proxyPassword,
         connect: (host, port) => forwardOut(client, host, port),
-        onError: (error) => log.debug(`SOCKS5 proxy: ${error.message}`)
+        onError: (error) => log.warn(`SOCKS5 proxy: ${error.message}`)
       })
     } catch (error) {
       client.destroy()
@@ -169,8 +161,12 @@ export class SshTunnelService {
     }
 
     const tunnel: Tunnel = {
-      proxyOptions: { proxyHost: LOOPBACK, proxyPort: server.port, proxyUsername, proxyPassword },
+      route: {
+        kind: 'socks5',
+        proxy: { proxyHost: LOOPBACK, proxyPort: server.port, proxyUsername, proxyPassword }
+      },
       pinnedHostKey,
+      failure: () => null,
       close: async () => {
         if (closed) return
         await teardown()
@@ -202,16 +198,39 @@ export class SshTunnelService {
     await Promise.allSettled(tunnels.map((tunnel) => tunnel.close()))
   }
 
+  private async hostKeyAlgorithms(
+    knownHosts: KnownHostEntry[],
+    host: string,
+    port: number
+  ): Promise<Algorithms | undefined> {
+    // Same trust order as verifyHostKey: the pin store counts only when known_hosts lists nothing.
+    const listed = findHostKeys(knownHosts, host, port)
+    const pinned = listed.length > 0 ? null : await this.hostKeys.get(host, port)
+    const trusted = pinned === null ? listed : [pinned]
+    const types = trusted.map(keyTypeOf).filter((type): type is string => type !== null)
+    if (types.length === 0) return undefined
+    // hostVerifier sees only the negotiated key, so a trusted key type has to win the negotiation.
+    return { serverHostKey: orderHostKeyAlgorithms(types, ssh2Constants.DEFAULT_SERVER_HOST_KEY) }
+  }
+
   /**
-   * Trust order: the user's own known_hosts wins, then our pin store, and only
-   * a host neither knows about gets pinned on the spot.
+   * A key known_hosts revokes is refused outright. Otherwise the user's own
+   * known_hosts wins, then our pin store, and only a host neither knows about
+   * gets pinned on the spot.
    */
   private async verifyHostKey(
+    knownHosts: KnownHostEntry[],
     host: string,
     port: number,
     key: Buffer
   ): Promise<PinnedHostKeyNotice | null> {
-    const allowed = findHostKeys(await readKnownHosts(this.knownHostsPath), host, port)
+    if (isRevoked(knownHosts, host, port, key)) {
+      throw new SshHostKeyMismatchError(
+        `${host} presented host key ${fingerprint(key)}, which your ~/.ssh/known_hosts marks as revoked!`
+      )
+    }
+
+    const allowed = findHostKeys(knownHosts, host, port)
     if (allowed.length > 0) {
       if (allowed.some((known) => keyMatches(key, known))) return null
       throw new SshHostKeyMismatchError(

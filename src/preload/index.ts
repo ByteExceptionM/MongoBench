@@ -1,11 +1,18 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { Api } from '@shared/api'
-import type { ConnectionDropped, UpdateCheckResult, UpdateProgress } from '@shared/events'
+import type {
+  CloudflaredLoginPrompt,
+  ConnectionDropped,
+  UpdateCheckResult,
+  UpdateProgress
+} from '@shared/events'
 import type { Result } from '@shared/result'
 import type {
   AggregateRequest,
   AggregateResponse,
+  CancelQueryRequest,
   CollectionInfo,
+  CollectionSchema,
   CollectionStats,
   ConnectionConfig,
   ConnectionInput,
@@ -17,16 +24,20 @@ import type {
   CreateIndexPayload,
   CreateUserPayload,
   DatabaseInfo,
+  DatabaseRoleInfo,
   DatabaseUser,
   DeleteManyRequest,
   DeleteManyResponse,
   DeleteOneRequest,
   DeleteOneResponse,
+  DistinctRequest,
+  DistinctResponse,
   DropIndexPayload,
   DropUserPayload,
   FindRequest,
   FindResponse,
   IndexInfo,
+  IndexStatsReport,
   InsertManyRequest,
   InsertManyResponse,
   InsertOneRequest,
@@ -35,7 +46,9 @@ import type {
   ReplaceOneRequest,
   ReplaceOneResponse,
   ServerStats,
-  UpdateUserPayload
+  UpdateUserPayload,
+  WriteRequest,
+  WriteResponse
 } from '@shared/types'
 
 const invoke = <T>(channel: string, payload?: unknown): Promise<Result<T>> =>
@@ -69,8 +82,14 @@ const api: Api = {
     onDropped: (listener: (payload: ConnectionDropped) => void) =>
       subscribe<ConnectionDropped>('connections:dropped', listener)
   },
+  cloudflared: {
+    version: (binaryPath?: string) => invoke<string>('cloudflared:version', { binaryPath }),
+    onLogin: (listener: (prompt: CloudflaredLoginPrompt) => void) =>
+      subscribe<CloudflaredLoginPrompt>('cloudflared:login', listener)
+  },
   dialog: {
-    pickPrivateKey: () => invoke<string | null>('dialog:pickPrivateKey')
+    pickPrivateKey: () => invoke<string | null>('dialog:pickPrivateKey'),
+    pickCloudflared: () => invoke<string | null>('dialog:pickCloudflared')
   },
   databases: {
     list: (connectionId: string) => invoke<DatabaseInfo[]>('databases:list', { connectionId }),
@@ -90,7 +109,9 @@ const api: Api = {
       invoke<void>('collections:create', payload),
     drop: (payload: { connectionId: string; db: string; coll: string }) =>
       invoke<void>('collections:drop', payload),
-    rename: (payload: RenameCollectionPayload) => invoke<void>('collections:rename', payload)
+    rename: (payload: RenameCollectionPayload) => invoke<void>('collections:rename', payload),
+    schema: (payload: { connectionId: string; db: string; coll: string }) =>
+      invoke<CollectionSchema>('collections:schema', payload)
   },
   query: {
     find: (request: FindRequest) => invoke<FindResponse>('query:find', request),
@@ -103,7 +124,10 @@ const api: Api = {
       invoke<InsertManyResponse>('query:insertMany', request),
     deleteOne: (request: DeleteOneRequest) => invoke<DeleteOneResponse>('query:deleteOne', request),
     deleteMany: (request: DeleteManyRequest) =>
-      invoke<DeleteManyResponse>('query:deleteMany', request)
+      invoke<DeleteManyResponse>('query:deleteMany', request),
+    distinct: (request: DistinctRequest) => invoke<DistinctResponse>('query:distinct', request),
+    cancel: (request: CancelQueryRequest) => invoke<void>('query:cancel', request),
+    write: (request: WriteRequest) => invoke<WriteResponse>('query:write', request)
   },
   users: {
     list: (payload: { connectionId: string; db: string }) =>
@@ -112,11 +136,17 @@ const api: Api = {
     update: (payload: UpdateUserPayload) => invoke<void>('users:update', payload),
     drop: (payload: DropUserPayload) => invoke<void>('users:drop', payload)
   },
+  roles: {
+    list: (payload: { connectionId: string; db: string }) =>
+      invoke<DatabaseRoleInfo[]>('roles:list', payload)
+  },
   indexes: {
     list: (payload: { connectionId: string; db: string; coll: string }) =>
       invoke<IndexInfo[]>('indexes:list', payload),
     create: (payload: CreateIndexPayload) => invoke<{ name: string }>('indexes:create', payload),
-    drop: (payload: DropIndexPayload) => invoke<void>('indexes:drop', payload)
+    drop: (payload: DropIndexPayload) => invoke<void>('indexes:drop', payload),
+    stats: (payload: { connectionId: string; db: string; coll: string }) =>
+      invoke<IndexStatsReport>('indexes:stats', payload)
   },
   updater: {
     check: () => invoke<UpdateCheckResult>('updater:check'),

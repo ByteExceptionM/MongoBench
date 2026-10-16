@@ -45,8 +45,10 @@ import {
   type PasswordOptions
 } from '@/lib/passwordGenerator'
 import { queryKeys } from '@/lib/queryClient'
+import { diffRoles, orderRoles, roleKey, roleLabel } from '@/lib/userRoles'
 import { cn } from '@/lib/utils'
 import type { DatabaseUser, DatabaseUserRole } from '@shared/types'
+import { RoleEditor } from './RoleEditor'
 
 type Props = {
   open: boolean
@@ -57,15 +59,7 @@ type Props = {
 
 type FormMode = { kind: 'list' } | { kind: 'create' } | { kind: 'edit'; user: DatabaseUser }
 
-const COMMON_DB_ROLES = ['read', 'readWrite', 'dbAdmin', 'dbOwner', 'userAdmin'] as const
-
-const ROLE_LABEL: Record<string, string> = {
-  read: 'Read',
-  readWrite: 'Read & write',
-  dbAdmin: 'DB admin',
-  dbOwner: 'DB owner',
-  userAdmin: 'User admin'
-}
+const ROLE_PREVIEW_LIMIT = 6
 
 export function ManageUsersDialog({ open, connectionId, db, onClose }: Props) {
   const [mode, setMode] = useState<FormMode>({ kind: 'list' })
@@ -98,7 +92,7 @@ export function ManageUsersDialog({ open, connectionId, db, onClose }: Props) {
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-3xl">
+      <DialogContent className="flex max-h-[85vh] max-w-3xl flex-col gap-4">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             {mode.kind !== 'list' && (
@@ -114,7 +108,9 @@ export function ManageUsersDialog({ open, connectionId, db, onClose }: Props) {
             )}
             {mode.kind === 'list' && <>Manage users</>}
             {mode.kind === 'create' && <>New user</>}
-            {mode.kind === 'edit' && <>Edit user — {mode.user.user}</>}
+            {mode.kind === 'edit' && (
+              <span className="min-w-0 truncate">Edit user — {mode.user.user}</span>
+            )}
           </DialogTitle>
           <DialogDescription className="font-mono text-xs">{db}</DialogDescription>
         </DialogHeader>
@@ -136,6 +132,7 @@ export function ManageUsersDialog({ open, connectionId, db, onClose }: Props) {
             mode="create"
             connectionId={connectionId}
             db={db}
+            users={usersQuery.data ?? []}
             onDone={() => setMode({ kind: 'list' })}
           />
         )}
@@ -146,6 +143,7 @@ export function ManageUsersDialog({ open, connectionId, db, onClose }: Props) {
             connectionId={connectionId}
             db={db}
             existing={mode.user}
+            users={usersQuery.data ?? []}
             onDone={() => setMode({ kind: 'list' })}
           />
         )}
@@ -226,7 +224,7 @@ function UsersListView({
   }
 
   return (
-    <div className="grid gap-3">
+    <div className="flex min-h-0 flex-1 flex-col gap-3">
       <div className="flex items-center justify-between">
         <div className="text-xs text-muted-foreground">
           {users.length} user{users.length === 1 ? '' : 's'}
@@ -240,10 +238,10 @@ function UsersListView({
           No users defined in {db}.
         </div>
       ) : (
-        <div className="overflow-hidden rounded-md border">
+        <div className="min-h-0 flex-1 overflow-y-auto rounded-md border">
           <table className="w-full text-xs">
-            <thead className="bg-muted/40 text-left text-[10px] uppercase tracking-wider text-muted-foreground">
-              <tr>
+            <thead className="sticky top-0 z-10 bg-background text-left text-[10px] uppercase tracking-wider text-muted-foreground">
+              <tr className="bg-muted/40">
                 <th className="px-3 py-2 font-medium">User</th>
                 <th className="px-3 py-2 font-medium">Roles</th>
                 <th className="w-px px-3 py-2"></th>
@@ -252,24 +250,11 @@ function UsersListView({
             <tbody>
               {users.map((u) => (
                 <tr key={u.user} className="border-t hover:bg-accent/30">
-                  <td className="px-3 py-2 font-mono">{u.user}</td>
-                  <td className="px-3 py-2">
-                    <div className="flex flex-wrap gap-1">
-                      {u.roles.map((r, i) => (
-                        <span
-                          key={`${r.role}-${r.db}-${i}`}
-                          className="rounded-sm border bg-background px-1.5 py-0.5 font-mono text-[10px]"
-                        >
-                          {r.role}
-                          <span className="text-muted-foreground">@{r.db}</span>
-                        </span>
-                      ))}
-                      {u.roles.length === 0 && (
-                        <span className="text-[10px] italic text-muted-foreground">no roles</span>
-                      )}
-                    </div>
+                  <td className="min-w-32 break-all px-3 py-2 align-top font-mono">{u.user}</td>
+                  <td className="px-3 py-2 align-top">
+                    <UserRolesCell roles={u.roles} db={db} />
                   </td>
-                  <td className="px-3 py-2">
+                  <td className="px-3 py-2 align-top">
                     <div className="flex justify-end gap-1">
                       <Button
                         size="icon"
@@ -301,83 +286,76 @@ function UsersListView({
   )
 }
 
+function UserRolesCell({ roles, db }: { roles: DatabaseUserRole[]; db: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const ordered = useMemo(() => orderRoles(roles, db), [roles, db])
+
+  if (ordered.length === 0) {
+    return <span className="text-[10px] italic text-muted-foreground">no roles</span>
+  }
+
+  const shown = expanded ? ordered : ordered.slice(0, ROLE_PREVIEW_LIMIT)
+  return (
+    <div className="flex flex-wrap gap-1">
+      {shown.map((r, i) => (
+        <span
+          // Stored user documents may repeat a role; the index keeps such keys unique.
+          key={`${i}:${roleKey(r)}`}
+          title={roleLabel(r)}
+          className="max-w-full truncate rounded-sm border bg-background px-1.5 py-0.5 font-mono text-[10px]"
+        >
+          {r.role}
+          <span className="text-muted-foreground">@{r.db}</span>
+        </span>
+      ))}
+      {ordered.length > ROLE_PREVIEW_LIMIT && (
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((v) => !v)}
+          className="text-[10px] text-muted-foreground hover:text-foreground"
+        >
+          {expanded ? 'Show less' : `+${ordered.length - ROLE_PREVIEW_LIMIT} more`}
+        </button>
+      )}
+    </div>
+  )
+}
+
 function UserForm({
   mode,
   connectionId,
   db,
   existing,
+  users,
   onDone
 }: {
   mode: 'create' | 'edit'
   connectionId: string
   db: string
   existing?: DatabaseUser
+  users: DatabaseUser[]
   onDone: () => void
 }) {
-  const initial = useMemo(() => {
-    if (mode === 'edit' && existing) {
-      const selected = new Set<string>()
-      const others: DatabaseUserRole[] = []
-      for (const r of existing.roles) {
-        if (r.db === db && (COMMON_DB_ROLES as readonly string[]).includes(r.role)) {
-          selected.add(r.role)
-        } else {
-          others.push(r)
-        }
-      }
-      return {
-        username: existing.user,
-        selectedRoles: selected,
-        customRoles: others.length ? JSON.stringify(others, null, 2) : ''
-      }
-    }
-    return { username: '', selectedRoles: new Set<string>(), customRoles: '' }
-  }, [mode, existing, db])
-
-  const [username, setUsername] = useState(initial.username)
+  const initialRoles = useMemo(() => existing?.roles ?? [], [existing])
+  const [username, setUsername] = useState(existing?.user ?? '')
   const [password, setPassword] = useState('')
   const [generatorOpen, setGeneratorOpen] = useState(false)
-  const [selectedRoles, setSelectedRoles] = useState<Set<string>>(new Set(initial.selectedRoles))
-  const [customRoles, setCustomRoles] = useState(initial.customRoles)
+  const [roles, setRoles] = useState<DatabaseUserRole[]>(initialRoles)
   const [serverError, setServerError] = useState<string | null>(null)
   const queryClient = useQueryClient()
 
-  const customRolesParse = useMemo(() => {
-    if (customRoles.trim().length === 0)
-      return { ok: true as const, roles: [] as DatabaseUserRole[] }
-    try {
-      const parsed = JSON.parse(customRoles)
-      if (!Array.isArray(parsed)) return { ok: false as const, error: 'Must be a JSON array' }
-      const roles: DatabaseUserRole[] = []
-      for (const r of parsed) {
-        if (typeof r !== 'object' || r === null || Array.isArray(r)) {
-          return { ok: false as const, error: 'Each entry must be an object' }
-        }
-        const role = (r as Record<string, unknown>)['role']
-        const roleDb = (r as Record<string, unknown>)['db']
-        if (typeof role !== 'string' || typeof roleDb !== 'string') {
-          return { ok: false as const, error: 'Each entry needs `role` and `db` strings' }
-        }
-        roles.push({ role, db: roleDb })
-      }
-      return { ok: true as const, roles }
-    } catch (e) {
-      return { ok: false as const, error: e instanceof Error ? e.message : 'Invalid JSON' }
-    }
-  }, [customRoles])
+  const diff = useMemo(() => diffRoles(initialRoles, roles), [initialRoles, roles])
+  const rolesChanged = diff.added.length + diff.removed.length > 0
+  // The server matches existing users by their exact name, whitespace included.
+  const targetUser = existing?.user ?? username.trim()
 
   const validation = useMemo(() => {
     if (username.trim().length === 0) return 'Username is required'
     if (mode === 'create' && password.length === 0) return 'Password is required'
-    if (!customRolesParse.ok) return `Custom roles: ${customRolesParse.error}`
+    if (mode === 'edit' && !rolesChanged && password.length === 0) return 'No changes to save'
     return null
-  }, [username, password, mode, customRolesParse])
-
-  const allRoles = (): DatabaseUserRole[] => {
-    if (!customRolesParse.ok) return []
-    const own = Array.from(selectedRoles).map((role) => ({ role, db }))
-    return [...own, ...customRolesParse.roles]
-  }
+  }, [username, password, mode, rolesChanged])
 
   const createMutation = useMutation({
     mutationFn: () =>
@@ -386,7 +364,7 @@ function UserForm({
         db,
         username: username.trim(),
         password,
-        roles: allRoles()
+        roles
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.users(connectionId, db) })
@@ -403,13 +381,13 @@ function UserForm({
       api.users.update({
         connectionId,
         db,
-        username: username.trim(),
+        username: targetUser,
         password: password.length > 0 ? password : null,
-        roles: allRoles()
+        roles: rolesChanged ? roles : null
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.users(connectionId, db) })
-      toast.success(`User ${username.trim()} updated`)
+      toast.success(`User ${targetUser} updated`)
       onDone()
     },
     onError: (e: unknown) => {
@@ -427,111 +405,67 @@ function UserForm({
 
   const busy = createMutation.isPending || updateMutation.isPending
 
-  const toggleRole = (role: string) =>
-    setSelectedRoles((prev) => {
-      const next = new Set(prev)
-      if (next.has(role)) next.delete(role)
-      else next.add(role)
-      return next
-    })
-
   return (
-    <form onSubmit={onSubmit} className="grid gap-4">
-      <div className="grid grid-cols-2 gap-4">
-        <div className="grid gap-1.5">
-          <Label htmlFor="user-name">Username</Label>
-          <Input
-            id="user-name"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            disabled={mode === 'edit'}
-            spellCheck={false}
-            className="font-mono"
-            autoFocus={mode === 'create'}
-          />
-        </div>
-        <div className="grid gap-1.5">
-          <Label htmlFor="user-pwd" className="flex items-center gap-1">
-            <KeyRound className="h-3 w-3" />
-            {mode === 'edit' ? 'New password (optional)' : 'Password'}
-          </Label>
-          <div className="flex gap-1.5">
+    <form onSubmit={onSubmit} className="flex min-h-0 flex-1 flex-col gap-4">
+      <div className="-mr-2 grid min-h-0 flex-1 content-start gap-4 overflow-y-auto pr-2">
+        <div className="grid grid-cols-2 gap-4">
+          <div className="grid gap-1.5">
+            <Label htmlFor="user-name">Username</Label>
             <Input
-              id="user-pwd"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete="new-password"
-              placeholder={mode === 'edit' ? 'Leave blank to keep current' : ''}
+              id="user-name"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              disabled={mode === 'edit'}
+              spellCheck={false}
+              className="font-mono"
+              autoFocus={mode === 'create'}
             />
-            <Button
-              type="button"
-              size="icon"
-              variant={generatorOpen ? 'secondary' : 'outline'}
-              className="shrink-0"
-              onClick={() => {
-                if (!generatorOpen && password.length === 0) {
-                  setPassword(generatePassword(DEFAULT_OPTIONS))
-                }
-                setGeneratorOpen(!generatorOpen)
-              }}
-              aria-label="Toggle password generator"
-              title="Generate password"
-            >
-              <Wand2 className="h-4 w-4" />
-            </Button>
+          </div>
+          <div className="grid gap-1.5">
+            <Label htmlFor="user-pwd" className="flex items-center gap-1">
+              <KeyRound className="h-3 w-3" />
+              {mode === 'edit' ? 'New password (optional)' : 'Password'}
+            </Label>
+            <div className="flex gap-1.5">
+              <Input
+                id="user-pwd"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="new-password"
+                placeholder={mode === 'edit' ? 'Leave blank to keep current' : ''}
+              />
+              <Button
+                type="button"
+                size="icon"
+                variant={generatorOpen ? 'secondary' : 'outline'}
+                className="shrink-0"
+                onClick={() => {
+                  if (!generatorOpen && password.length === 0) {
+                    setPassword(generatePassword(DEFAULT_OPTIONS))
+                  }
+                  setGeneratorOpen(!generatorOpen)
+                }}
+                aria-label="Toggle password generator"
+                title="Generate password"
+              >
+                <Wand2 className="h-4 w-4" />
+              </Button>
+            </div>
           </div>
         </div>
-      </div>
 
-      {generatorOpen && <PasswordGeneratorPanel value={password} onChange={setPassword} />}
+        {generatorOpen && <PasswordGeneratorPanel value={password} onChange={setPassword} />}
 
-      <div className="grid gap-2">
-        <Label className="text-[10px] uppercase tracking-wider">
-          Roles on <span className="font-mono normal-case text-foreground">{db}</span>
-        </Label>
-        <div className="grid grid-cols-2 gap-x-4 gap-y-2 rounded-md border bg-card p-3 sm:grid-cols-3">
-          {COMMON_DB_ROLES.map((role) => (
-            <label
-              key={role}
-              className={cn(
-                'flex cursor-pointer items-center gap-2 text-xs',
-                selectedRoles.has(role) ? 'text-foreground' : 'text-muted-foreground'
-              )}
-            >
-              <input
-                type="checkbox"
-                checked={selectedRoles.has(role)}
-                onChange={() => toggleRole(role)}
-                className="accent-primary"
-              />
-              <span className="font-medium">{ROLE_LABEL[role] ?? role}</span>
-              <span className="font-mono text-[10px] text-muted-foreground">{role}</span>
-            </label>
-          ))}
-        </div>
-      </div>
-
-      <div className="grid gap-1.5">
-        <Label htmlFor="user-customroles" className="text-[10px] uppercase tracking-wider">
-          Additional roles (JSON)
-        </Label>
-        <textarea
-          id="user-customroles"
-          value={customRoles}
-          onChange={(e) => setCustomRoles(e.target.value)}
-          spellCheck={false}
-          rows={3}
-          placeholder='[{"role": "clusterMonitor", "db": "admin"}]'
-          className="rounded-md border border-input bg-transparent px-3 py-2 font-mono text-xs shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        <RoleEditor
+          connectionId={connectionId}
+          db={db}
+          roles={roles}
+          initialRoles={initialRoles}
+          showDiff={mode === 'edit'}
+          users={users}
+          onChange={setRoles}
         />
-        <p className="text-[10px] text-muted-foreground">
-          For roles outside <span className="font-mono">{db}</span> or non-standard roles. Each
-          entry: <span className="font-mono">{`{ role, db }`}</span>.
-        </p>
-        {!customRolesParse.ok && (
-          <p className="text-xs text-destructive">{customRolesParse.error}</p>
-        )}
       </div>
 
       {serverError && (

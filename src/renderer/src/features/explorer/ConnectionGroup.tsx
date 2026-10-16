@@ -16,9 +16,8 @@ import {
 import { cn } from '@/lib/utils'
 import { useAppStore } from '@/store'
 import { useExplorerStore } from '@/store/explorer'
-import { useTabsStore } from '@/store/tabs'
 import { api, ApiError } from '@/lib/api'
-import { queryKeys } from '@/lib/queryClient'
+import { queryKeys, releaseConnection } from '@/lib/queryClient'
 import { formatHostShort } from '@/lib/displayUri'
 import {
   ContextMenu,
@@ -57,8 +56,6 @@ export function ConnectionGroup({
 }: Props) {
   const isActive = useAppStore((s) => s.activeConnectionIds.has(connection.id))
   const markConnected = useAppStore((s) => s.markConnected)
-  const markDisconnected = useAppStore((s) => s.markDisconnected)
-  const closeTabsForConnection = useTabsStore((s) => s.closeForConnection)
   const expanded = useExplorerStore((s) => s.expandedConnections.has(connection.id))
   const expandConnection = useExplorerStore((s) => s.expandConnection)
   const collapseConnection = useExplorerStore((s) => s.collapseConnection)
@@ -91,10 +88,7 @@ export function ConnectionGroup({
 
   const disconnectMutation = useMutation({
     mutationFn: () => api.connections.disconnect(connection.id),
-    onSuccess: () => {
-      markDisconnected(connection.id)
-      closeTabsForConnection(connection.id)
-    }
+    onSuccess: () => releaseConnection(queryClient, connection.id)
   })
 
   const busy = connectMutation.isPending || disconnectMutation.isPending

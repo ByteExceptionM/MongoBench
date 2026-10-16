@@ -1,9 +1,16 @@
-import type { ConnectionDropped, UpdateCheckResult, UpdateProgress } from '@shared/events'
+import type {
+  CloudflaredLoginPrompt,
+  ConnectionDropped,
+  UpdateCheckResult,
+  UpdateProgress
+} from '@shared/events'
 import type { ApiErrorPayload, ErrorCode, Result } from '@shared/result'
 import type {
   AggregateRequest,
   AggregateResponse,
+  CancelQueryRequest,
   CollectionInfo,
+  CollectionSchema,
   CollectionStats,
   ConnectionConfig,
   ConnectionInput,
@@ -15,16 +22,20 @@ import type {
   CreateIndexPayload,
   CreateUserPayload,
   DatabaseInfo,
+  DatabaseRoleInfo,
   DatabaseUser,
   DeleteManyRequest,
   DeleteManyResponse,
   DeleteOneRequest,
   DeleteOneResponse,
+  DistinctRequest,
+  DistinctResponse,
   DropIndexPayload,
   DropUserPayload,
   FindRequest,
   FindResponse,
   IndexInfo,
+  IndexStatsReport,
   InsertManyRequest,
   InsertManyResponse,
   InsertOneRequest,
@@ -33,7 +44,9 @@ import type {
   ReplaceOneRequest,
   ReplaceOneResponse,
   ServerStats,
-  UpdateUserPayload
+  UpdateUserPayload,
+  WriteRequest,
+  WriteResponse
 } from '@shared/types'
 
 export class ApiError extends Error {
@@ -95,7 +108,12 @@ export const api = {
     drop: (payload: { connectionId: string; db: string; coll: string }): Promise<void> =>
       unwrap(window.api.collections.drop(payload)),
     rename: (payload: RenameCollectionPayload): Promise<void> =>
-      unwrap(window.api.collections.rename(payload))
+      unwrap(window.api.collections.rename(payload)),
+    schema: (payload: {
+      connectionId: string
+      db: string
+      coll: string
+    }): Promise<CollectionSchema> => unwrap(window.api.collections.schema(payload))
   },
   query: {
     find: (request: FindRequest): Promise<FindResponse> => unwrap(window.api.query.find(request)),
@@ -112,7 +130,13 @@ export const api = {
     deleteOne: (request: DeleteOneRequest): Promise<DeleteOneResponse> =>
       unwrap(window.api.query.deleteOne(request)),
     deleteMany: (request: DeleteManyRequest): Promise<DeleteManyResponse> =>
-      unwrap(window.api.query.deleteMany(request))
+      unwrap(window.api.query.deleteMany(request)),
+    distinct: (request: DistinctRequest): Promise<DistinctResponse> =>
+      unwrap(window.api.query.distinct(request)),
+    cancel: (request: CancelQueryRequest): Promise<void> =>
+      unwrap(window.api.query.cancel(request)),
+    write: (request: WriteRequest): Promise<WriteResponse> =>
+      unwrap(window.api.query.write(request))
   },
   users: {
     list: (payload: { connectionId: string; db: string }): Promise<DatabaseUser[]> =>
@@ -121,15 +145,32 @@ export const api = {
     update: (payload: UpdateUserPayload): Promise<void> => unwrap(window.api.users.update(payload)),
     drop: (payload: DropUserPayload): Promise<void> => unwrap(window.api.users.drop(payload))
   },
+  roles: {
+    list: (payload: { connectionId: string; db: string }): Promise<DatabaseRoleInfo[]> =>
+      unwrap(window.api.roles.list(payload))
+  },
   indexes: {
     list: (payload: { connectionId: string; db: string; coll: string }): Promise<IndexInfo[]> =>
       unwrap(window.api.indexes.list(payload)),
     create: (payload: CreateIndexPayload): Promise<{ name: string }> =>
       unwrap(window.api.indexes.create(payload)),
-    drop: (payload: DropIndexPayload): Promise<void> => unwrap(window.api.indexes.drop(payload))
+    drop: (payload: DropIndexPayload): Promise<void> => unwrap(window.api.indexes.drop(payload)),
+    stats: (payload: {
+      connectionId: string
+      db: string
+      coll: string
+    }): Promise<IndexStatsReport> => unwrap(window.api.indexes.stats(payload))
+  },
+  cloudflared: {
+    version: (binaryPath?: string): Promise<string> =>
+      unwrap(window.api.cloudflared.version(binaryPath)),
+    // A push subscription — no Result to unwrap.
+    onLogin: (listener: (prompt: CloudflaredLoginPrompt) => void): (() => void) =>
+      window.api.cloudflared.onLogin(listener)
   },
   dialog: {
-    pickPrivateKey: (): Promise<string | null> => unwrap(window.api.dialog.pickPrivateKey())
+    pickPrivateKey: (): Promise<string | null> => unwrap(window.api.dialog.pickPrivateKey()),
+    pickCloudflared: (): Promise<string | null> => unwrap(window.api.dialog.pickCloudflared())
   },
   updater: {
     check: (): Promise<UpdateCheckResult> => unwrap(window.api.updater.check()),

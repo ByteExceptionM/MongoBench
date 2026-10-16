@@ -1,8 +1,29 @@
 import type { MongoClient } from 'mongodb'
-import type { CollectionInfo, CollectionStats, DatabaseInfo, ServerStats } from '@shared/types'
+import { createSchemaBuilder } from '@shared/collectionSchema'
+import type {
+  CollectionInfo,
+  CollectionSchema,
+  CollectionStats,
+  DatabaseInfo,
+  ServerStats
+} from '@shared/types'
+import { decodeDocument, toCanonical } from '../lib/ejson'
+import { validationError } from '../lib/errorMap'
+import { mergeStorageStats } from '../lib/storageStats'
 import type { ConnectionService } from './ConnectionService'
 
 const COLLECTION_NAME_RE = /^[^$\0]+$/
+const SCHEMA_SAMPLE_SIZE = 200
+const SCHEMA_SAMPLE_MAX_TIME_MS = 5_000
+
+type Privilege = {
+  resource?: {
+    db?: string
+    collection?: string
+    cluster?: boolean
+    anyResource?: boolean
+  }
+}
 
 /** Metadata + light mutating operations on databases and collections. */
 export class DatabaseService {
@@ -44,27 +65,28 @@ export class DatabaseService {
   }
 
   async collectionStats(connectionId: string, db: string, coll: string): Promise<CollectionStats> {
-    const client = this.connections.getClient(connectionId)
-    const cursor = client
-      .db(db)
-      .collection(coll)
-      .aggregate([{ $collStats: { storageStats: {} } }, { $limit: 1 }])
+    const collection = this.connections.getClient(connectionId).db(db).collection(coll)
+    const cursor = collection.aggregate([{ $collStats: { storageStats: {} } }])
     const docs = await cursor.toArray()
-    const first = docs[0]
-    if (!first) {
+    if (docs.length === 0) {
       const e = new Error(`collStats returned no result for ${db}.${coll}`)
       e.name = 'DocumentNotFoundError'
       throw e
     }
-    const ns = (first['ns'] as string) ?? `${db}.${coll}`
-    const s = (first['storageStats'] as Record<string, unknown>) ?? {}
+    const merged = mergeStorageStats(docs)
+    const ns = merged.ns ?? `${db}.${coll}`
+    const s = merged.storage
+    // Time-series collections report the storage of their buckets but no document count.
+    const count =
+      typeof s['count'] === 'number' ? s['count'] : await collection.estimatedDocumentCount()
+    const size = numberOr(s['size'], 0)
     return {
       ns,
-      count: numberOr(s['count'], 0),
-      size: numberOr(s['size'], 0),
+      count,
+      size,
       storageSize: numberOr(s['storageSize'], 0),
       freeStorageSize: numberOr(s['freeStorageSize'], 0),
-      avgObjSize: numberOr(s['avgObjSize'], 0),
+      avgObjSize: count > 0 ? size / count : 0,
       totalIndexSize: numberOr(s['totalIndexSize'], 0),
       indexSizes: (s['indexSizes'] as Record<string, number>) ?? {},
       nindexes: numberOr(s['nindexes'], 0),
@@ -74,6 +96,28 @@ export class DatabaseService {
         ? { numOrphanDocs: numberOr(s['numOrphanDocs'], 0) }
         : {})
     }
+  }
+
+  /** Field schema inferred from a random sample of up to 200 documents; empty for an empty collection. */
+  async collectionSchema(
+    connectionId: string,
+    db: string,
+    coll: string
+  ): Promise<CollectionSchema> {
+    const database = this.connections.getClient(connectionId).db(db)
+    const [info] = await database
+      .listCollections({ name: coll }, { nameOnly: true, authorizedCollections: true })
+      .toArray()
+    const collection = database.collection(coll)
+    const options = { raw: true, maxTimeMS: SCHEMA_SAMPLE_MAX_TIME_MS }
+    // $sample on a view runs the whole view pipeline first; a limited find streams.
+    const cursor =
+      info?.type === 'view'
+        ? collection.find<Uint8Array>({}, { ...options, limit: SCHEMA_SAMPLE_SIZE })
+        : collection.aggregate<Uint8Array>([{ $sample: { size: SCHEMA_SAMPLE_SIZE } }], options)
+    const builder = createSchemaBuilder()
+    for await (const bytes of cursor) builder.add(toCanonical(decodeDocument(bytes)))
+    return builder.build()
   }
 
   async dropCollection(connectionId: string, db: string, coll: string): Promise<void> {
@@ -113,14 +157,10 @@ export class DatabaseService {
   ): Promise<void> {
     if (newName === coll) return
     if (!COLLECTION_NAME_RE.test(newName)) {
-      const e = new Error('Collection name must not contain $ or null bytes')
-      e.name = 'ValidationError'
-      throw e
+      throw validationError('Collection name must not contain $ or null bytes')
     }
     if (newName.startsWith('system.')) {
-      const e = new Error('Collection name must not start with "system."')
-      e.name = 'ValidationError'
-      throw e
+      throw validationError('Collection name must not start with "system."')
     }
     const client = this.connections.getClient(connectionId)
     await client.db(db).collection(coll).rename(newName)
@@ -257,7 +297,7 @@ export class DatabaseService {
 
 /**
  * Returns the set of database names the authenticated user has any privilege on,
- * or 'all' when the user holds a cluster-wide / anyResource privilege (or auth
+ * or 'all' when the user holds an any-database / anyResource privilege (or auth
  * is disabled and no privilege list is reported).
  *
  * Why: `listDatabases({ authorizedDatabases: true })` is ignored server-side for
@@ -272,30 +312,27 @@ async function authorizedDatabases(client: MongoClient): Promise<Set<string> | '
       .command({ connectionStatus: 1, showPrivileges: true })) as {
       authInfo?: {
         authenticatedUsers?: Array<{ user: string; db: string }>
-        authenticatedUserPrivileges?: Array<{
-          resource?: {
-            db?: string
-            collection?: string
-            cluster?: boolean
-            anyResource?: boolean
-          }
-        }>
+        authenticatedUserPrivileges?: Privilege[]
       }
     }
     const auth = status.authInfo
     if (!auth || (auth.authenticatedUsers ?? []).length === 0) return 'all'
-    const privs = auth.authenticatedUserPrivileges ?? []
-    const dbs = new Set<string>()
-    for (const p of privs) {
-      const r = p.resource
-      if (!r) continue
-      if (r.anyResource) return 'all'
-      if (typeof r.db === 'string' && r.db.length > 0) dbs.add(r.db)
-    }
-    return dbs
+    return databasesFromPrivileges(auth.authenticatedUserPrivileges ?? [])
   } catch {
     return 'all'
   }
+}
+
+/** Databases the privileges reach, or 'all'; db '' means every database (*AnyDatabase roles). */
+export function databasesFromPrivileges(privs: readonly Privilege[]): Set<string> | 'all' {
+  const dbs = new Set<string>()
+  for (const p of privs) {
+    const r = p.resource
+    if (!r) continue
+    if (r.anyResource || r.db === '') return 'all'
+    if (typeof r.db === 'string') dbs.add(r.db)
+  }
+  return dbs
 }
 
 /**
@@ -337,26 +374,18 @@ function basename(path: string): string {
 
 function assertCollectionName(name: string): void {
   if (!COLLECTION_NAME_RE.test(name)) {
-    const e = new Error('Collection name must not contain $ or null bytes')
-    e.name = 'ValidationError'
-    throw e
+    throw validationError('Collection name must not contain $ or null bytes')
   }
   if (name.startsWith('system.')) {
-    const e = new Error('Collection name must not start with "system."')
-    e.name = 'ValidationError'
-    throw e
+    throw validationError('Collection name must not start with "system."')
   }
 }
 
 function assertDatabaseName(name: string): void {
   if (name.length === 0 || name.length > 64) {
-    const e = new Error('Database name must be 1–64 characters')
-    e.name = 'ValidationError'
-    throw e
+    throw validationError('Database name must be 1–64 characters')
   }
   if (/[\s/\\."$*<>:|?\0]/.test(name)) {
-    const e = new Error('Database name contains invalid characters')
-    e.name = 'ValidationError'
-    throw e
+    throw validationError('Database name contains invalid characters')
   }
 }

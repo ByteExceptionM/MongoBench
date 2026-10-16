@@ -5,12 +5,14 @@
  *
  * Imported once from main.tsx — the side effect installs the global,
  * registers the MongoBench-branded editor theme, and registers the
- * `mongo-shell` language used by the document editor and query toolbar.
+ * `mongo-shell` language (with its completion provider) used by the
+ * document editor and query toolbar.
  */
 import EditorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker'
 import JsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker'
 import * as monaco from 'monaco-editor'
 import { loader } from '@monaco-editor/react'
+import { registerMongoCompletion } from './completion/monacoAdapter'
 
 self.MonacoEnvironment = {
   getWorker(_workerId, label) {
@@ -168,6 +170,19 @@ monaco.languages.setMonarchTokensProvider('mongo-shell', {
     ]
   }
 })
+
+registerMongoCompletion()
+
+/** Options every editor shares; its own options are spread over them. */
+export const BASE_EDITOR_OPTIONS = {
+  // Its pending highlight rejects with 'Canceled' when a mode switch or Escape disposes the editor.
+  occurrencesHighlight: 'off',
+  // Word suggestions would offer text from other editors' models.
+  wordBasedSuggestions: 'off',
+  suggestOnTriggerCharacters: true,
+  acceptSuggestionOnEnter: 'smart',
+  suggest: { showWords: false }
+} as const satisfies monaco.editor.IStandaloneEditorConstructionOptions
 
 // Subtle, low-saturation palette. The goal is *gentle* tinting against the
 // dark editor background — values still read as text first, color second.

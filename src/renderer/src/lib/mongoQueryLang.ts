@@ -9,12 +9,14 @@
  *   - trailing commas                      `{ a: 1, }`
  *   - line / block comments                `// ...`  and  / *...* /
  *   - regex literals                       `/^foo/i`
+ *   - integral doubles                     `5.0`, `1e3` stay doubles (`{"$numberDouble":"5.0"}`)
  *   - shell helpers:
- *       ObjectId("…")
+ *       ObjectId("…")  /  ObjectId()       (mints a fresh id)
  *       ISODate("…")  /  new Date("…")  /  Date("…")
  *       NumberLong("…")  /  Long("…")
  *       NumberDecimal("…")  /  Decimal128("…")
  *       NumberInt(…)  /  Int32(…)
+ *       NumberDouble(…)  /  Double(…)      (number, or "NaN" / "Infinity" / "-Infinity" / numeric string)
  *       UUID("…")
  *       BinData(subType, "base64")
  *       Timestamp(t, i)
@@ -28,6 +30,7 @@
  * Each helper is rewritten into its EJSON wrapper (`{"$oid":...}`,
  * `{"$date":...}`, …) — which the existing backend already understands.
  */
+import { ObjectId } from 'bson'
 
 export type ParseSuccess = { ok: true; ejson: string; value: unknown }
 export type ParseFailure = { ok: false; error: string; offset: number }
@@ -96,7 +99,8 @@ export function parseMongoDocuments(input: string): DocumentsParseResult {
   }
 }
 
-class ParseError extends Error {
+/** A syntax error at `offset` (UTF-16 index into the parsed source). */
+export class ParseError extends Error {
   constructor(
     message: string,
     public readonly offset: number
@@ -106,9 +110,11 @@ class ParseError extends Error {
   }
 }
 
-type PunctValue = '{' | '}' | '[' | ']' | ':' | ',' | '(' | ')'
+/** `.` and `;` only occur in shell mode. */
+export type PunctValue = '{' | '}' | '[' | ']' | ':' | ',' | '(' | ')' | '.' | ';'
 
-type Token =
+/** A lexical token; `offset` is the index of its first character. */
+export type Token =
   | { type: 'punct'; value: PunctValue; offset: number }
   | { type: 'string'; value: string; offset: number }
   | { type: 'number'; value: string; offset: number }
@@ -117,7 +123,15 @@ type Token =
 
 const REGEX_OK_AFTER = new Set<PunctValue>([':', ',', '[', '('])
 
-function tokenize(src: string): Token[] {
+const NUMBER_RE = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?/
+
+/**
+ * Splits source into tokens, skipping whitespace and comments.
+ * @param options.shell also emits `.` and `;` so command chains like `db.c.find()` tokenize.
+ * @throws ParseError on characters or literals the language doesn't know.
+ */
+export function tokenize(src: string, options: { shell?: boolean } = {}): Token[] {
+  const punctuation = options.shell ? '{}[]:,().;' : '{}[]:,()'
   const out: Token[] = []
   let i = 0
   let lastSignificant: Token | null = null
@@ -227,7 +241,7 @@ function tokenize(src: string): Token[] {
     }
 
     // number
-    const numMatch = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?/.exec(src.slice(i))
+    const numMatch = NUMBER_RE.exec(src.slice(i))
     if (numMatch && ((c >= '0' && c <= '9') || c === '.' || c === '-' || c === '+')) {
       // disambiguate: a leading +/- followed by no digit isn't a number
       const m = numMatch[0]
@@ -241,7 +255,7 @@ function tokenize(src: string): Token[] {
     }
 
     // punctuation
-    if ('{}[]:,()'.includes(c)) {
+    if (punctuation.includes(c)) {
       const t: Token = { type: 'punct', value: c as PunctValue, offset: i }
       out.push(t)
       lastSignificant = t
@@ -265,7 +279,8 @@ function tokenize(src: string): Token[] {
   return out
 }
 
-class Parser {
+/** Recursive-descent parser over `tokenize` output; values come back as EJSON wrapper trees. */
+export class Parser {
   private pos = 0
   constructor(
     private readonly tokens: Token[],
@@ -284,7 +299,7 @@ class Parser {
     }
     if (t.type === 'number') {
       this.advance()
-      return parseNumberLiteral(t.value)
+      return parseNumberLiteral(t.value, t.offset)
     }
     if (t.type === 'regex') {
       this.advance()
@@ -322,7 +337,13 @@ class Parser {
       }
       this.expectPunct(':')
       const value = this.parseValue()
-      obj[key] = value
+      // Assigning "__proto__" would call the prototype setter and drop the stored field.
+      Object.defineProperty(obj, key, {
+        value,
+        enumerable: true,
+        writable: true,
+        configurable: true
+      })
       const sep = this.peek()
       if (sep && sep.type === 'punct' && sep.value === ',') {
         this.advance()
@@ -398,7 +419,7 @@ class Parser {
     const next = this.peek()
     const hasArgs = next?.type === 'punct' && next.value === '('
     if (hasArgs) {
-      const args = this.parseCallArgs()
+      const args = this.parseArgs().map((arg) => arg.value)
       return applyHelper(name, args, t.offset)
     }
     // Standalone helpers (no parens)
@@ -408,9 +429,10 @@ class Parser {
     throw new ParseError(`Unknown identifier "${name}"`, t.offset)
   }
 
-  parseCallArgs(): unknown[] {
+  /** Parses `(value, …)`; each argument keeps the offset of its first token. */
+  parseArgs(): Array<{ value: unknown; offset: number }> {
     this.expectPunct('(')
-    const args: unknown[] = []
+    const args: Array<{ value: unknown; offset: number }> = []
     if (
       this.peek()?.type === 'punct' &&
       (this.peek() as Token & { value: PunctValue }).value === ')'
@@ -419,7 +441,8 @@ class Parser {
       return args
     }
     for (;;) {
-      args.push(this.parseValue())
+      const offset = this.peek()?.offset ?? this.src.length
+      args.push({ value: this.parseValue(), offset })
       const sep = this.peek()
       if (sep && sep.type === 'punct' && sep.value === ',') {
         this.advance()
@@ -461,15 +484,13 @@ class Parser {
   }
 }
 
-function applyHelper(name: string, args: unknown[], offset: number): unknown {
+function applyHelper(name: string, rawArgs: unknown[], offset: number): unknown {
+  // Number arguments configure the helper (`NumberLong(5.0)` means 5); a DBRef id is a stored value.
+  const args = name === 'DBRef' ? rawArgs : rawArgs.map(plainNumber)
   switch (name) {
     case 'ObjectId':
     case 'objectId': {
-      if (args.length === 0) {
-        // mongo shell allows ObjectId() to mint one — we leave generation to the server.
-        // Use placeholder so the backend can see the intent (driver auto-fills _id on insert anyway).
-        return { $oid: '000000000000000000000000' }
-      }
+      if (args.length === 0) return { $oid: new ObjectId().toHexString() }
       requireString(args[0], 'ObjectId', offset)
       return { $oid: args[0] as string }
     }
@@ -477,7 +498,11 @@ function applyHelper(name: string, args: unknown[], offset: number): unknown {
     case 'Date': {
       if (args.length === 0) return { $date: new Date().toISOString() }
       const a = args[0]
-      if (typeof a === 'string') return { $date: a }
+      if (typeof a === 'string') {
+        // Main would store an unparseable date string as 1970-01-01 without an error.
+        if (Number.isNaN(Date.parse(a))) throw new ParseError(`Invalid date "${a}"`, offset)
+        return { $date: a }
+      }
       if (typeof a === 'number') return { $date: { $numberLong: String(a) } }
       throw new ParseError(`${name}() argument must be a string or number`, offset)
     }
@@ -498,6 +523,15 @@ function applyHelper(name: string, args: unknown[], offset: number): unknown {
       const v = args[0]
       if (typeof v === 'string' || typeof v === 'number') return { $numberDecimal: String(v) }
       throw new ParseError(`${name}() argument must be a string or number`, offset)
+    }
+    case 'NumberDouble':
+    case 'Double': {
+      const v = args[0]
+      if (typeof v === 'number') return { $numberDouble: Object.is(v, -0) ? '-0.0' : String(v) }
+      if (typeof v === 'string' && (NON_FINITE_DOUBLES.has(v) || isFiniteDecimal(v))) {
+        return { $numberDouble: v }
+      }
+      throw new ParseError(`${name}() argument must be a number or numeric string`, offset)
     }
     case 'UUID': {
       requireString(args[0], 'UUID', offset)
@@ -583,10 +617,30 @@ function regexToEjson(pattern: string, flags: string): unknown {
   return { $regularExpression: { pattern, options: flags } }
 }
 
-function parseNumberLiteral(text: string): number {
+const NON_FINITE_DOUBLES = new Set(['NaN', 'Infinity', '-Infinity'])
+
+// Main parses `$numberDouble` with parseFloat, which reads hex or blank strings differently than Number().
+const isFiniteDecimal = (text: string): boolean =>
+  NUMBER_RE.exec(text)?.[0] === text && Number.isFinite(Number(text))
+
+function parseNumberLiteral(text: string, offset: number): unknown {
   const n = Number(text)
-  if (!Number.isFinite(n)) throw new ParseError(`Invalid number "${text}"`, 0)
+  if (!Number.isFinite(n)) throw new ParseError(`Invalid number "${text}"`, offset)
+  // Main maps an integral JSON number to Int32/Int64; the literal's dot or exponent says it's a double.
+  if (Number.isInteger(n) && /[.eE]/.test(text)) return { $numberDouble: text }
   return n
+}
+
+function plainNumber(value: unknown): unknown {
+  if (
+    typeof value === 'object' &&
+    value !== null &&
+    Object.keys(value).length === 1 &&
+    typeof (value as { $numberDouble?: unknown }).$numberDouble === 'string'
+  ) {
+    return Number((value as { $numberDouble: string }).$numberDouble)
+  }
+  return value
 }
 
 function encodeJavaLegacyUuid(uuid: string): string | null {

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
   CheckCircle2,
@@ -34,8 +34,16 @@ import { api, ApiError } from '@/lib/api'
 import { queryKeys } from '@/lib/queryClient'
 import { cn } from '@/lib/utils'
 import {
+  canReuseServiceTokenSecret,
+  cloudflaredTunnelProblems,
+  INVALID_CLOUDFLARED_PATH_MESSAGE,
+  isCloudflaredExecutable
+} from '@shared/cloudflared'
+import {
   DEFAULT_SSH_PORT,
   type AuthMechanism,
+  type CloudflaredAuthMethod,
+  type CloudflaredTunnelInput,
   type ConnectionConfig,
   type ConnectionInput,
   type ConnectionTestResult,
@@ -45,8 +53,16 @@ import {
   type UuidEncoding
 } from '@shared/types'
 
+type TunnelKind = 'none' | 'ssh' | 'cloudflared'
+
+const TUNNEL_HINTS: Record<TunnelKind, string> = {
+  none: 'Connect to the hosts in the connection string directly.',
+  ssh: 'Reach hosts that are only routable from an SSH server — including every member of a replica set.',
+  cloudflared:
+    'MongoBench runs cloudflared access tcp on a free local port and connects through it — no host or port to enter.'
+}
+
 type SshFormState = {
-  enabled: boolean
   host: string
   /** Text, like the other numeric inputs in this form. */
   port: string
@@ -55,6 +71,17 @@ type SshFormState = {
   privateKeyPath: string
   password: string
   passphrase: string
+}
+
+type CloudflaredFormState = {
+  hostname: string
+  authMethod: CloudflaredAuthMethod
+  serviceTokenId: string
+  serviceTokenSecret: string
+  /** Blank = cloudflared from PATH. */
+  binaryPath: string
+  /** binaryPath as of the last blur or Browse: every version check starts a cloudflared process. */
+  checkedPath: string
 }
 
 type FormState = {
@@ -79,11 +106,13 @@ type FormState = {
   socketTimeoutMS: string
   retryWrites: 'default' | 'on' | 'off'
   retryReads: 'default' | 'on' | 'off'
+  /** The one tunnel in use; the other section keeps its settings, switched off. */
+  tunnel: TunnelKind
   ssh: SshFormState
+  cloudflared: CloudflaredFormState
 }
 
 const emptySsh = (): SshFormState => ({
-  enabled: false,
   host: '',
   port: String(DEFAULT_SSH_PORT),
   username: '',
@@ -91,6 +120,15 @@ const emptySsh = (): SshFormState => ({
   privateKeyPath: '',
   password: '',
   passphrase: ''
+})
+
+const emptyCloudflared = (): CloudflaredFormState => ({
+  hostname: '',
+  authMethod: 'browser',
+  serviceTokenId: '',
+  serviceTokenSecret: '',
+  binaryPath: '',
+  checkedPath: ''
 })
 
 const emptyForm = (): FormState => ({
@@ -115,7 +153,9 @@ const emptyForm = (): FormState => ({
   socketTimeoutMS: '',
   retryWrites: 'default',
   retryReads: 'default',
-  ssh: emptySsh()
+  tunnel: 'none',
+  ssh: emptySsh(),
+  cloudflared: emptyCloudflared()
 })
 
 const fromConnection = (conn: ConnectionConfig): FormState => ({
@@ -140,11 +180,11 @@ const fromConnection = (conn: ConnectionConfig): FormState => ({
   socketTimeoutMS: conn.socketTimeoutMS !== undefined ? String(conn.socketTimeoutMS) : '',
   retryWrites: conn.retryWrites === undefined ? 'default' : conn.retryWrites ? 'on' : 'off',
   retryReads: conn.retryReads === undefined ? 'default' : conn.retryReads ? 'on' : 'off',
+  tunnel: conn.ssh?.enabled ? 'ssh' : conn.cloudflared?.enabled ? 'cloudflared' : 'none',
   ssh:
     conn.ssh === undefined
       ? emptySsh()
       : {
-          enabled: conn.ssh.enabled,
           host: conn.ssh.host,
           port: String(conn.ssh.port ?? DEFAULT_SSH_PORT),
           username: conn.ssh.username,
@@ -153,6 +193,17 @@ const fromConnection = (conn: ConnectionConfig): FormState => ({
           // Secrets never come back from main; blank means "keep".
           password: '',
           passphrase: ''
+        },
+  cloudflared:
+    conn.cloudflared === undefined
+      ? emptyCloudflared()
+      : {
+          hostname: conn.cloudflared.hostname,
+          authMethod: conn.cloudflared.authMethod,
+          serviceTokenId: conn.cloudflared.serviceTokenId ?? '',
+          serviceTokenSecret: '',
+          binaryPath: conn.cloudflared.binaryPath ?? '',
+          checkedPath: (conn.cloudflared.binaryPath ?? '').trim()
         }
 })
 
@@ -168,16 +219,16 @@ const parseInt = (raw: string): number | undefined => {
  * section is still sent, so switching the tunnel off keeps its settings for
  * the next time it is switched on.
  */
-function buildSshInput(ssh: SshFormState): SshTunnelInput | undefined {
+function buildSshInput(ssh: SshFormState, enabled: boolean): SshTunnelInput | undefined {
   const host = ssh.host.trim()
   const username = ssh.username.trim()
   const privateKeyPath = ssh.privateKeyPath.trim()
   const touched = host.length > 0 || username.length > 0 || privateKeyPath.length > 0
-  if (!ssh.enabled && !touched) return undefined
+  if (!enabled && !touched) return undefined
 
   const port = parseInt(ssh.port)
   return {
-    enabled: ssh.enabled,
+    enabled,
     host,
     ...(port !== undefined ? { port } : {}),
     username,
@@ -185,6 +236,29 @@ function buildSshInput(ssh: SshFormState): SshTunnelInput | undefined {
     ...(privateKeyPath.length > 0 ? { privateKeyPath } : {}),
     ...(ssh.password.length > 0 ? { password: ssh.password } : {}),
     ...(ssh.passphrase.length > 0 ? { passphrase: ssh.passphrase } : {})
+  }
+}
+
+/** Same contract as buildSshInput: undefined only while switched off and untouched. */
+function buildCloudflaredInput(
+  cf: CloudflaredFormState,
+  enabled: boolean
+): CloudflaredTunnelInput | undefined {
+  const hostname = cf.hostname.trim()
+  const serviceTokenId = cf.serviceTokenId.trim()
+  const binaryPath = cf.binaryPath.trim()
+  const touched = hostname.length > 0 || serviceTokenId.length > 0 || binaryPath.length > 0
+  if (!enabled && !touched) return undefined
+
+  // Main keeps a secret only for the service token method, so another method never sends one.
+  const secret = cf.authMethod === 'serviceToken' ? cf.serviceTokenSecret : ''
+  return {
+    enabled,
+    hostname,
+    authMethod: cf.authMethod,
+    ...(serviceTokenId.length > 0 ? { serviceTokenId } : {}),
+    ...(secret.length > 0 ? { serviceTokenSecret: secret } : {}),
+    ...(binaryPath.length > 0 ? { binaryPath } : {})
   }
 }
 
@@ -219,8 +293,10 @@ function buildInput(form: FormState): ConnectionInput {
   if (st !== undefined) input.socketTimeoutMS = st
   if (form.retryWrites !== 'default') input.retryWrites = form.retryWrites === 'on'
   if (form.retryReads !== 'default') input.retryReads = form.retryReads === 'on'
-  const ssh = buildSshInput(form.ssh)
+  const ssh = buildSshInput(form.ssh, form.tunnel === 'ssh')
   if (ssh !== undefined) input.ssh = ssh
+  const cloudflared = buildCloudflaredInput(form.cloudflared, form.tunnel === 'cloudflared')
+  if (cloudflared !== undefined) input.cloudflared = cloudflared
   return input
 }
 
@@ -237,6 +313,8 @@ export function ConnectionFormDialog({ open, onOpenChange, connection }: Props) 
   const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null)
   const [testError, setTestError] = useState<string | null>(null)
   const queryClient = useQueryClient()
+  const viaCloudflare = form.tunnel === 'cloudflared'
+  const hasStoredServiceTokenSecret = connection?.cloudflared?.hasStoredServiceTokenSecret ?? false
 
   useEffect(() => {
     if (!open) return
@@ -247,6 +325,11 @@ export function ConnectionFormDialog({ open, onOpenChange, connection }: Props) 
   }, [open, connection])
 
   const input = useMemo(() => buildInput(form), [form])
+  // Main reuses the saved secret only for the hostname and client ID it was saved for.
+  const savedSecretApplies =
+    hasStoredServiceTokenSecret &&
+    input.cloudflared !== undefined &&
+    canReuseServiceTokenSecret(connection?.cloudflared, input.cloudflared)
 
   const validation = useMemo(() => {
     if (input.name.length === 0) return 'Name is required'
@@ -261,8 +344,21 @@ export function ConnectionFormDialog({ open, onOpenChange, connection }: Props) 
         return 'Private key file is required'
       }
     }
+    const tunnelProblem = cloudflaredTunnelProblems(input)[0]
+    if (tunnelProblem !== undefined) return tunnelProblem.message
+    const cf = input.cloudflared
+    if (
+      cf?.enabled === true &&
+      cf.authMethod === 'serviceToken' &&
+      cf.serviceTokenSecret === undefined &&
+      !savedSecretApplies
+    ) {
+      return hasStoredServiceTokenSecret
+        ? 'Enter the client secret again — the saved one only applies to the saved hostname and client ID'
+        : 'Service token client secret is required'
+    }
     return null
-  }, [input])
+  }, [input, hasStoredServiceTokenSecret, savedSecretApplies])
 
   const testMutation = useMutation({
     mutationFn: () => api.connections.test(input, connection?.id),
@@ -300,6 +396,19 @@ export function ConnectionFormDialog({ open, onOpenChange, connection }: Props) 
   const updateSsh = (patch: Partial<SshFormState>) =>
     setForm((prev) => ({ ...prev, ssh: { ...prev.ssh, ...patch } }))
 
+  const updateCloudflared = (patch: Partial<CloudflaredFormState>) =>
+    setForm((prev) => ({ ...prev, cloudflared: { ...prev.cloudflared, ...patch } }))
+
+  const setTunnel = (tunnel: TunnelKind) =>
+    setForm((prev) => ({
+      ...prev,
+      tunnel,
+      // The tunnel never dials this host; a placeholder leaves only the Access hostname and credentials to fill in.
+      ...(tunnel === 'cloudflared' && prev.uri.trim().length === 0
+        ? { uri: 'mongodb://localhost' }
+        : {})
+    }))
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col gap-4">
@@ -325,11 +434,19 @@ export function ConnectionFormDialog({ open, onOpenChange, connection }: Props) 
           <Field
             label="Connection string"
             htmlFor="conn-uri"
-            hint="mongodb:// or mongodb+srv:// — credentials may be embedded or filled below."
+            hint={
+              viaCloudflare
+                ? 'Credentials, database and options apply as written. The host is never dialled — with TLS on, it is the name the server certificate is checked against.'
+                : 'mongodb:// or mongodb+srv:// — credentials may be embedded or filled below.'
+            }
           >
             <Input
               id="conn-uri"
-              placeholder="mongodb://user:password@host:27017/db"
+              placeholder={
+                viaCloudflare
+                  ? 'mongodb://user:password@localhost/db?authSource=admin'
+                  : 'mongodb://user:password@host:27017/db'
+              }
               value={form.uri}
               onChange={(e) => update('uri', e.target.value)}
               spellCheck={false}
@@ -367,19 +484,31 @@ export function ConnectionFormDialog({ open, onOpenChange, connection }: Props) 
           </div>
 
           <div className="grid gap-3">
-            <ToggleRow
-              id="conn-ssh"
-              label="Connect through an SSH tunnel"
-              hint="Reach hosts that are only routable from an SSH server — including every member of a replica set."
-              checked={form.ssh.enabled}
-              onCheckedChange={(v) => updateSsh({ enabled: v })}
-            />
-            {form.ssh.enabled && (
+            <Field label="Tunnel" htmlFor="conn-tunnel" hint={TUNNEL_HINTS[form.tunnel]}>
+              <Select value={form.tunnel} onValueChange={(v) => setTunnel(v as TunnelKind)}>
+                <SelectTrigger id="conn-tunnel">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">None</SelectItem>
+                  <SelectItem value="ssh">SSH tunnel</SelectItem>
+                  <SelectItem value="cloudflared">Cloudflare Access (cloudflared)</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+            {form.tunnel === 'ssh' && (
               <SshTunnelFields
                 value={form.ssh}
                 onChange={updateSsh}
                 hasStoredPassword={connection?.ssh?.hasStoredPassword ?? false}
                 hasStoredPassphrase={connection?.ssh?.hasStoredPassphrase ?? false}
+              />
+            )}
+            {viaCloudflare && (
+              <CloudflaredTunnelFields
+                value={form.cloudflared}
+                onChange={updateCloudflared}
+                savedSecretApplies={savedSecretApplies}
               />
             )}
           </div>
@@ -465,8 +594,13 @@ export function ConnectionFormDialog({ open, onOpenChange, connection }: Props) 
                 <ToggleRow
                   id="conn-direct"
                   label="Direct connection"
-                  hint="Skip topology discovery, talk to one node only."
-                  checked={form.directConnection}
+                  hint={
+                    viaCloudflare
+                      ? 'Always on through a Cloudflare tunnel — it reaches exactly one server.'
+                      : 'Skip topology discovery, talk to one node only.'
+                  }
+                  checked={form.directConnection || viaCloudflare}
+                  disabled={viaCloudflare}
                   onCheckedChange={(v) => update('directConnection', v)}
                 />
               </Section>
@@ -806,6 +940,190 @@ function SshTunnelFields({
   )
 }
 
+function CloudflaredTunnelFields({
+  value,
+  onChange,
+  savedSecretApplies
+}: {
+  value: CloudflaredFormState
+  onChange: (patch: Partial<CloudflaredFormState>) => void
+  savedSecretApplies: boolean
+}) {
+  const [picking, setPicking] = useState(false)
+
+  const pickBinary = async () => {
+    setPicking(true)
+    try {
+      const path = await api.dialog.pickCloudflared()
+      if (path !== null) onChange({ binaryPath: path, checkedPath: path.trim() })
+    } catch (error: unknown) {
+      toast.error(error instanceof ApiError ? error.message : String(error))
+    } finally {
+      setPicking(false)
+    }
+  }
+
+  return (
+    <div className="grid gap-3 rounded-md border bg-card/40 p-4">
+      <div className="grid grid-cols-[2fr_1fr] gap-3">
+        <Field
+          label="Access hostname"
+          htmlFor="cf-hostname"
+          hint="The public hostname of the Access application in front of MongoDB — what you would pass to --hostname."
+        >
+          <Input
+            id="cf-hostname"
+            placeholder="mongo.example.com"
+            value={value.hostname}
+            onChange={(e) => onChange({ hostname: e.target.value })}
+            spellCheck={false}
+          />
+        </Field>
+        <Field label="Authentication" htmlFor="cf-auth">
+          <Select
+            value={value.authMethod}
+            onValueChange={(v) => onChange({ authMethod: v as CloudflaredAuthMethod })}
+          >
+            <SelectTrigger id="cf-auth">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="browser">Browser sign-in</SelectItem>
+              <SelectItem value="serviceToken">Service token</SelectItem>
+            </SelectContent>
+          </Select>
+        </Field>
+      </div>
+
+      {value.authMethod === 'browser' && (
+        <p className="text-[10px] leading-snug text-muted-foreground">
+          cloudflared opens your browser when it has no valid Access session for this hostname, and
+          reuses the session until it expires.
+        </p>
+      )}
+
+      {value.authMethod === 'serviceToken' && (
+        <>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Client ID" htmlFor="cf-token-id">
+              <Input
+                id="cf-token-id"
+                placeholder="….access"
+                value={value.serviceTokenId}
+                onChange={(e) => onChange({ serviceTokenId: e.target.value })}
+                autoComplete="off"
+                spellCheck={false}
+                className="font-mono text-xs"
+              />
+            </Field>
+            <Field
+              label={savedSecretApplies ? 'Client secret (saved)' : 'Client secret'}
+              htmlFor="cf-token-secret"
+              hint={savedSecretApplies ? 'Leave blank to keep the saved secret.' : undefined}
+            >
+              <Input
+                id="cf-token-secret"
+                type="password"
+                value={value.serviceTokenSecret}
+                onChange={(e) => onChange({ serviceTokenSecret: e.target.value })}
+                autoComplete="new-password"
+                placeholder={savedSecretApplies ? '••••••••' : ''}
+              />
+            </Field>
+          </div>
+          <p className="text-[10px] leading-snug text-muted-foreground">
+            The Access application needs a Service Auth policy for this token.
+          </p>
+        </>
+      )}
+
+      <div className="grid gap-1.5">
+        <Field
+          label="cloudflared executable"
+          htmlFor="cf-binary"
+          hint="Leave blank to use cloudflared from PATH."
+        >
+          <div className="flex gap-2">
+            <Input
+              id="cf-binary"
+              placeholder="From PATH"
+              value={value.binaryPath}
+              onChange={(e) => onChange({ binaryPath: e.target.value })}
+              onBlur={() => onChange({ checkedPath: value.binaryPath.trim() })}
+              spellCheck={false}
+              className="font-mono text-xs"
+            />
+            <Button type="button" variant="outline" onClick={() => void pickBinary()}>
+              {picking ? <Loader2 className="animate-spin" /> : <FolderOpen />}
+              Browse
+            </Button>
+          </div>
+        </Field>
+        <CloudflaredVersionStatus binaryPath={value.checkedPath} />
+      </div>
+
+      <p className="rounded-md border border-border/60 bg-background/40 px-3 py-2 text-[10px] leading-relaxed text-muted-foreground">
+        MongoBench starts cloudflared when you connect and stops it when you disconnect. The driver
+        talks only to the server behind the tunnel, so replica-set discovery is off;{' '}
+        <code>mongodb+srv://</code> is not supported.
+      </p>
+    </div>
+  )
+}
+
+/** Which cloudflared would run for `binaryPath` (blank = PATH), or why none can. */
+function CloudflaredVersionStatus({ binaryPath }: { binaryPath: string }) {
+  const runnable = binaryPath === '' || isCloudflaredExecutable(binaryPath)
+  const version = useQuery({
+    queryKey: queryKeys.cloudflaredVersion(binaryPath),
+    queryFn: () => api.cloudflared.version(binaryPath === '' ? undefined : binaryPath),
+    enabled: runnable,
+    staleTime: 60_000
+  })
+
+  if (!runnable) return <StatusLine tone="error">{INVALID_CLOUDFLARED_PATH_MESSAGE}</StatusLine>
+  if (version.isPending) return <StatusLine tone="pending">Looking for cloudflared…</StatusLine>
+  if (version.isError) {
+    const error = version.error
+    return (
+      <StatusLine tone="error">
+        {error instanceof ApiError ? error.message : String(error)}
+      </StatusLine>
+    )
+  }
+  return (
+    <StatusLine tone="ok">
+      {binaryPath === ''
+        ? `cloudflared ${version.data} found on PATH`
+        : `cloudflared ${version.data}`}
+    </StatusLine>
+  )
+}
+
+function StatusLine({
+  tone,
+  children
+}: {
+  tone: 'pending' | 'ok' | 'error'
+  children: React.ReactNode
+}) {
+  return (
+    <p
+      className={cn(
+        'flex items-start gap-1.5 text-[10px] leading-snug',
+        tone === 'pending' && 'text-muted-foreground',
+        tone === 'ok' && 'text-success',
+        tone === 'error' && 'text-destructive'
+      )}
+    >
+      {tone === 'pending' && <Loader2 className="mt-px h-3 w-3 shrink-0 animate-spin" />}
+      {tone === 'ok' && <CheckCircle2 className="mt-px h-3 w-3 shrink-0" />}
+      {tone === 'error' && <XCircle className="mt-px h-3 w-3 shrink-0" />}
+      <span className="min-w-0 break-words">{children}</span>
+    </p>
+  )
+}
+
 function Field({
   label,
   htmlFor,
@@ -847,23 +1165,25 @@ function ToggleRow({
   label,
   hint,
   checked,
+  disabled,
   onCheckedChange
 }: {
   id: string
   label: string
   hint?: string
   checked: boolean
+  disabled?: boolean
   onCheckedChange: (v: boolean) => void
 }) {
   return (
     <div className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-background/40 px-3 py-2">
       <div className="grid min-w-0 gap-0.5">
-        <Label htmlFor={id} className="cursor-pointer text-xs font-medium">
+        <Label htmlFor={id} className={cn('text-xs font-medium', !disabled && 'cursor-pointer')}>
           {label}
         </Label>
         {hint && <span className="text-[10px] leading-snug text-muted-foreground">{hint}</span>}
       </div>
-      <Switch id={id} checked={checked} onCheckedChange={onCheckedChange} />
+      <Switch id={id} checked={checked} disabled={disabled} onCheckedChange={onCheckedChange} />
     </div>
   )
 }

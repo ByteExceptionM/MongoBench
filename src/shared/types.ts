@@ -79,6 +79,42 @@ export type SshTunnelView = {
   hasStoredPassphrase: boolean
 }
 
+export type CloudflaredAuthMethod = 'browser' | 'serviceToken'
+
+/** Cloudflare Access tunnel settings; the driver dials only the tunnel's loopback port, never the URI's hosts. */
+export type CloudflaredTunnelInput = {
+  enabled: boolean
+  /** Public hostname of the Access application, e.g. `mongo.example.com`. */
+  hostname: string
+  authMethod: CloudflaredAuthMethod
+  serviceTokenId?: string
+  /** Cleartext only in-flight. Blank on edit = keep what is stored, if hostname and client ID are unchanged. */
+  serviceTokenSecret?: string
+  /** Absent = `cloudflared` from PATH. */
+  binaryPath?: string
+}
+
+/** On-disk shape — main process only. */
+export type StoredCloudflaredTunnel = {
+  enabled: boolean
+  hostname: string
+  authMethod: CloudflaredAuthMethod
+  serviceTokenId?: string
+  /** Base64 of safeStorage.encryptString(cleartext). */
+  encryptedServiceTokenSecret?: string
+  binaryPath?: string
+}
+
+/** Renderer-facing view — never carries cleartext or ciphertext secrets. */
+export type CloudflaredTunnelView = {
+  enabled: boolean
+  hostname: string
+  authMethod: CloudflaredAuthMethod
+  serviceTokenId?: string
+  binaryPath?: string
+  hasStoredServiceTokenSecret: boolean
+}
+
 export type AdvancedOptions = {
   directConnection?: boolean
   replicaSet?: string
@@ -111,6 +147,8 @@ export type StoredConnection = {
   appName?: string
   /** Absent on connections that reach their hosts directly. */
   ssh?: StoredSshTunnel
+  /** Absent on connections that reach their hosts directly. */
+  cloudflared?: StoredCloudflaredTunnel
   // Advanced driver options
   directConnection?: boolean
   replicaSet?: string
@@ -148,6 +186,8 @@ export type ConnectionConfig = {
   appName?: string
   /** Absent on connections that reach their hosts directly. */
   ssh?: SshTunnelView
+  /** Absent on connections that reach their hosts directly. */
+  cloudflared?: CloudflaredTunnelView
   directConnection?: boolean
   replicaSet?: string
   readPreference?: ReadPreference
@@ -185,6 +225,7 @@ export type ConnectionInput = {
   serverSelectionTimeoutMS?: number
   appName?: string
   ssh?: SshTunnelInput
+  cloudflared?: CloudflaredTunnelInput
   directConnection?: boolean
   replicaSet?: string
   readPreference?: ReadPreference
@@ -348,8 +389,16 @@ export type DatabaseUser = {
   user: string
   db: string
   roles: DatabaseUserRole[]
+  /** Relaxed EJSON. */
   customData?: Record<string, unknown>
   mechanisms?: string[]
+}
+
+/** A role as reported by `rolesInfo`, built-in roles included. */
+export type DatabaseRoleInfo = {
+  role: string
+  db: string
+  isBuiltin: boolean
 }
 
 export type CreateUserPayload = {
@@ -387,13 +436,15 @@ export type ConnectionUpdatePayload = {
  *   `{$oid:…}`/`{$date:…}`/…). Used by the table view.
  * - `canonical`: the document as a canonical-EJSON string (every BSON type
  *   wrapped). Used by the document editor for type-precise round-trips.
- * - `id`: the document's `_id` in canonical-EJSON string form — stable
- *   identity for row keys and write preconditions.
+ * - `id`: the document's `_id` in canonical-EJSON string form — the write
+ *   target for replace / delete. null when the result has no `_id`; only
+ *   unique for documents read from a collection, derived rows (aggregation,
+ *   distinct) may repeat it.
  * - `hash`: sha-256 over `canonical`. Used for optimistic concurrency on
  *   replace / delete.
  */
 export type DocumentEnvelope = {
-  id: string
+  id: string | null
   data: Record<string, unknown>
   canonical: string
   hash: string
@@ -478,6 +529,8 @@ export type FindRequest = {
   skip: number
   /** Omit or pass undefined to fetch all matching documents. */
   limit?: number
+  /** Lets `query.cancel` abort this run server-side. */
+  requestId?: string
 }
 
 export type FindResponse = {
@@ -485,17 +538,27 @@ export type FindResponse = {
   tookMs: number
 }
 
+/** Max rows an aggregation, shell or distinct run returns; one extra row is fetched to detect truncation. */
+export const RESULT_CAP = 1000
+
+/** Max documents one insert request carries. */
+export const MAX_INSERT_DOCUMENTS = 10_000
+
 export type AggregateRequest = {
   connectionId: string
   db: string
   coll: string
   /** Canonical-EJSON string of the pipeline (an array of stage objects). */
   pipeline: string
+  /** Lets `query.cancel` abort this run server-side. */
+  requestId?: string
 }
 
 export type AggregateResponse = {
   documents: DocumentEnvelope[]
   tookMs: number
+  /** More than RESULT_CAP documents came back; only the first RESULT_CAP are included. */
+  truncated: boolean
 }
 
 export type CountRequest = {
@@ -503,11 +566,163 @@ export type CountRequest = {
   db: string
   coll: string
   filter?: string
+  /** Always countDocuments; otherwise an empty filter uses the metadata estimate. */
+  exact?: boolean
+  /** Lets `query.cancel` abort this run server-side. */
+  requestId?: string
 }
 
 export type CountResponse = {
   count: number
   estimated: boolean
+  tookMs: number
+}
+
+export type DistinctRequest = {
+  connectionId: string
+  db: string
+  coll: string
+  field: string
+  filter?: string
+}
+
+/** Distinct values, each wrapped as a `{ value }` document; capped at RESULT_CAP. */
+export type DistinctResponse = {
+  documents: DocumentEnvelope[]
+  tookMs: number
+  truncated: boolean
+}
+
+export type CancelQueryRequest = {
+  requestId: string
+}
+
+/** Collection methods that write; also the write methods Shell mode runs. */
+export const WRITE_METHODS = [
+  'insertOne',
+  'insertMany',
+  'updateOne',
+  'updateMany',
+  'replaceOne',
+  'deleteOne',
+  'deleteMany',
+  'findOneAndUpdate',
+  'findOneAndReplace',
+  'findOneAndDelete',
+  'bulkWrite'
+] as const
+
+export type WriteMethod = (typeof WRITE_METHODS)[number]
+
+/**
+ * A write Shell mode runs, every value a canonical-EJSON string. `options` is the method's
+ * options object; an aggregation write is a pipeline ending in `$out` or `$merge`.
+ */
+export type WriteOp =
+  | { method: 'insertOne'; document: string; options?: string }
+  | { method: 'insertMany'; documents: string[]; options?: string }
+  | {
+      method: 'updateOne' | 'updateMany' | 'findOneAndUpdate'
+      filter: string
+      /** Update operators document, or an update pipeline array. */
+      update: string
+      options?: string
+    }
+  | {
+      method: 'replaceOne' | 'findOneAndReplace'
+      filter: string
+      replacement: string
+      options?: string
+    }
+  | { method: 'deleteOne' | 'deleteMany' | 'findOneAndDelete'; filter: string; options?: string }
+  | { method: 'bulkWrite'; operations: string; options?: string }
+  | { method: 'aggregate'; pipeline: string }
+
+export type WriteRequest = {
+  connectionId: string
+  db: string
+  coll: string
+  op: WriteOp
+}
+
+export type WriteResponse = {
+  tookMs: number
+  /** Counters the server reported for this method; absent ones do not apply to it. */
+  counts: {
+    inserted?: number
+    matched?: number
+    modified?: number
+    deleted?: number
+    upserted?: number
+  }
+  /** Canonical EJSON of the inserted or upserted `_id`s, at most RESULT_CAP. */
+  ids: string[]
+  /** More ids existed than `ids` holds. */
+  idsTruncated: boolean
+  /**
+   * findOneAnd*: the returned document, null when nothing matched; absent for other methods.
+   * Main decodes it with value promotion (an integral Double may read as Int32): not round-trippable.
+   */
+  document?: DocumentEnvelope | null
+}
+
+/** BSON type of a sampled value; `uuid` / `uuidLegacy` split binData subtypes 04 / 03 out of `binData`. */
+export type BsonTypeName =
+  | 'double'
+  | 'int'
+  | 'long'
+  | 'decimal'
+  | 'string'
+  | 'bool'
+  | 'date'
+  | 'objectId'
+  | 'uuid'
+  | 'uuidLegacy'
+  | 'binData'
+  | 'null'
+  | 'undefined'
+  | 'regex'
+  | 'timestamp'
+  | 'object'
+  | 'array'
+  | 'minKey'
+  | 'maxKey'
+  | 'javascript'
+  | 'symbol'
+  | 'dbPointer'
+  | 'dbRef'
+
+export type TypeCounts = Partial<Record<BsonTypeName, number>>
+
+export type SchemaValue = {
+  /** Canonical-EJSON JSON text of the value. */
+  ejson: string
+  count: number
+}
+
+export type SchemaField = {
+  /** Dot notation; array elements share their parent's path, keys of a map-like object collapse to `*`. */
+  path: string
+  /** Sampled documents containing the path at least once. */
+  docCount: number
+  /** Occurrences per type; an array counts once as `array`, its elements count in `elementTypes`. */
+  types: TypeCounts
+  elementTypes?: TypeCounts
+  /** Most frequent distinct scalar values, by count. */
+  values?: SchemaValue[]
+  /** More distinct values occurred than `values` holds. */
+  valuesTruncated?: boolean
+  /** Object whose keys are data (ids, numbers) rather than a fixed set of fields. */
+  mapLike?: boolean
+}
+
+export type CollectionSchema = {
+  /** Number of documents the schema was inferred from. */
+  sampleSize: number
+  /** Sorted by path. */
+  fields: SchemaField[]
+  /** The field cap was hit; rarer paths are missing. */
+  truncated: boolean
 }
 
 export type DatabaseRef = {
@@ -535,11 +750,13 @@ export type IndexInfo = {
   unique?: boolean
   sparse?: boolean
   expireAfterSeconds?: number
+  /** Relaxed EJSON. */
   partialFilterExpression?: Record<string, unknown>
+  /** Relaxed EJSON. */
   collation?: Record<string, unknown>
   hidden?: boolean
   background?: boolean
-  /** text index — per-field weight overrides. */
+  /** text index — per-field weight overrides, relaxed EJSON. */
   weights?: Record<string, number>
   /** text index — language used when a doc has no explicit `language`. */
   default_language?: string
@@ -552,10 +769,46 @@ export type IndexInfo = {
   /** 2d index — coordinate min/max. */
   min?: number
   max?: number
-  /** wildcard index — projection of paths to include/exclude. */
+  /** wildcard index — projection of paths to include/exclude, relaxed EJSON. */
   wildcardProjection?: Record<string, unknown>
-  /** Bytes on disk; populated from collStats's `indexSizes`. */
+}
+
+/** Why one source of index statistics could not be read; `message` is the server's text. */
+export type IndexStatsUnavailable = {
+  reason: 'unauthorized' | 'unsupported' | 'failed'
+  message: string
+}
+
+/** One mongod's `$indexStats` counters for one index. */
+export type IndexUsageSample = {
+  /** host:port of the mongod that counted. */
+  host: string
+  /** Sharded clusters only. */
+  shard?: string
+  /** User operations that used the index since `since`. */
+  ops: number
+  /** ISO-8601 instant the counter started (mongod start, index build or collMod). */
+  since: string
+}
+
+/** Runtime statistics of one index, merged across shards. */
+export type IndexRuntimeStats = {
+  name: string
+  /** Bytes on disk summed across shards; absent when not reported. */
   size?: number
+  /** A build is in progress on at least one shard. */
+  building: boolean
+  /** Empty when usage is unavailable or no mongod reported this index. */
+  usage: IndexUsageSample[]
+}
+
+/** Result of `indexes:stats`; each source degrades independently. */
+export type IndexStatsReport = {
+  indexes: IndexRuntimeStats[]
+  /** null when `$indexStats` succeeded. */
+  usageUnavailable: IndexStatsUnavailable | null
+  /** null when `$collStats` storage stats succeeded. */
+  storageUnavailable: IndexStatsUnavailable | null
 }
 
 export type IndexCreateOptions = {

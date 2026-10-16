@@ -1,6 +1,7 @@
 import type { Document } from 'mongodb'
 import type { ConnectionService } from './ConnectionService'
-import type { DatabaseUser, DatabaseUserRole } from '@shared/types'
+import { toRelaxed } from '../lib/ejson'
+import type { DatabaseRoleInfo, DatabaseUser, DatabaseUserRole } from '@shared/types'
 
 export class UserService {
   constructor(private readonly connections: ConnectionService) {}
@@ -20,8 +21,20 @@ export class UserService {
       user: u.user,
       db: u.db,
       roles: u.roles ?? [],
-      ...(u.customData !== undefined ? { customData: u.customData } : {}),
+      ...(u.customData !== undefined ? { customData: toRelaxed(u.customData) } : {}),
       ...(u.mechanisms !== undefined ? { mechanisms: u.mechanisms } : {})
+    }))
+  }
+
+  async listRoles(connectionId: string, db: string): Promise<DatabaseRoleInfo[]> {
+    const client = this.connections.getClient(connectionId)
+    const result = (await client.db(db).command({ rolesInfo: 1, showBuiltinRoles: true })) as {
+      roles?: Array<{ role: string; db: string; isBuiltin?: boolean }>
+    }
+    return (result.roles ?? []).map((r) => ({
+      role: r.role,
+      db: r.db,
+      isBuiltin: r.isBuiltin === true
     }))
   }
 

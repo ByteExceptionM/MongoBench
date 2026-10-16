@@ -1,6 +1,7 @@
-import type { Socket } from 'node:net'
+import { once } from 'node:events'
+import { createConnection, type Socket } from 'node:net'
 import { PassThrough } from 'node:stream'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SocksClient } from 'socks'
 import { createSocks5Server, type Socks5Server } from './socks5'
 
@@ -22,7 +23,8 @@ type Requested = { host: string; port: number }
  */
 async function startProxy(
   requested: Requested[],
-  connect?: (host: string, port: number) => Promise<PassThrough>
+  connect?: (host: string, port: number) => Promise<PassThrough>,
+  onError?: (error: Error) => void
 ): Promise<Socks5Server> {
   server = await createSocks5Server({
     username: USERNAME,
@@ -30,9 +32,35 @@ async function startProxy(
     connect: (host, port) => {
       requested.push({ host, port })
       return connect ? connect(host, port) : Promise.resolve(new PassThrough())
-    }
+    },
+    onError
   })
   return server
+}
+
+/**
+ * Sends greeting, credentials and CONNECT in one write and never reads the
+ * replies, so the test holds the raw socket while the outbound leg is pending.
+ */
+async function sendConnectRequest(proxyPort: number, destination: Requested): Promise<Socket> {
+  const socket = createConnection({ host: '127.0.0.1', port: proxyPort })
+  await once(socket, 'connect')
+  const host = Buffer.from(destination.host, 'utf8')
+  const port = Buffer.alloc(2)
+  port.writeUInt16BE(destination.port)
+  socket.write(
+    Buffer.concat([
+      Buffer.from([0x05, 0x01, 0x02]),
+      Buffer.from([0x01, USERNAME.length]),
+      Buffer.from(USERNAME, 'utf8'),
+      Buffer.from([PASSWORD.length]),
+      Buffer.from(PASSWORD, 'utf8'),
+      Buffer.from([0x05, 0x01, 0x00, 0x03, host.length]),
+      host,
+      port
+    ])
+  )
+  return socket
 }
 
 function connectThrough(
@@ -144,6 +172,43 @@ describe('createSocks5Server', () => {
     await expect(
       connectThrough(proxy.port, { host: 'mongo1.internal', port: 27017 })
     ).rejects.toThrow()
+  })
+
+  it('reports why the outbound leg could not be opened', async () => {
+    const errors: Error[] = []
+    const proxy = await startProxy(
+      [],
+      () => Promise.reject(new Error('(SSH) Channel open failure: administratively prohibited')),
+      (error) => errors.push(error)
+    )
+    await expect(
+      connectThrough(proxy.port, { host: 'mongo1.internal', port: 27017 })
+    ).rejects.toThrow()
+    expect(errors[0]?.message).toBe(
+      'failed to forward to mongo1.internal:27017: (SSH) Channel open failure: administratively prohibited'
+    )
+  })
+
+  it('destroys an outbound leg that opens after the client is gone', async () => {
+    let openRemote: (remote: PassThrough) => void = () => undefined
+    const pending = new Promise<PassThrough>((resolve) => (openRemote = resolve))
+    const requested: Requested[] = []
+    const errors: Error[] = []
+    const proxy = await startProxy(
+      requested,
+      () => pending,
+      (error) => errors.push(error)
+    )
+
+    const client = await sendConnectRequest(proxy.port, { host: 'mongo1.internal', port: 27017 })
+    await vi.waitFor(() => expect(requested).toHaveLength(1))
+    // A reset, unlike a FIN, leaves no 'end' that piping could pass on to the outbound leg.
+    client.resetAndDestroy()
+    await vi.waitFor(() => expect(errors).not.toHaveLength(0))
+
+    const remote = new PassThrough()
+    openRemote(remote)
+    await vi.waitFor(() => expect(remote.destroyed).toBe(true))
   })
 
   it('destroys live connections on close', async () => {

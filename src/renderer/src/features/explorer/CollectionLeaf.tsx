@@ -9,14 +9,15 @@ import {
   KeyRound,
   Loader2,
   Pencil,
+  SquarePlus,
   Table,
   Trash2
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useExplorerStore } from '@/store/explorer'
-import { useTabsStore } from '@/store/tabs'
+import { activeCollectionKey, collectionKey, useTabsStore } from '@/store/tabs'
 import { api, ApiError } from '@/lib/api'
-import { queryKeys } from '@/lib/queryClient'
+import { queryKeys, removeNamespaceQueries } from '@/lib/queryClient'
 import {
   ContextMenu,
   ContextMenuContent,
@@ -53,11 +54,12 @@ export function CollectionLeaf({
   name: string
   type: 'collection' | 'view'
 }) {
+  const target = { connectionId, db, coll: name }
   const open = useTabsStore((s) => s.open)
+  const openNew = useTabsStore((s) => s.openNew)
   const closeForCollection = useTabsStore((s) => s.closeForCollection)
-  const activeTabId = useTabsStore((s) => s.activeTabId)
-  const tabId = `${connectionId}::${db}::${name}`
-  const isActive = activeTabId === tabId
+  const key = collectionKey(target)
+  const isActive = useTabsStore((s) => activeCollectionKey(s) === key)
   const [dialog, setDialog] = useState<DialogState>(null)
   const queryClient = useQueryClient()
   const buttonRef = useRef<HTMLButtonElement>(null)
@@ -87,6 +89,7 @@ export function CollectionLeaf({
     mutationFn: () => api.collections.drop({ connectionId, db, coll: name }),
     onSuccess: () => {
       closeForCollection(connectionId, db, name)
+      removeNamespaceQueries(queryClient, connectionId, db, name)
       void queryClient.invalidateQueries({ queryKey: queryKeys.collections(connectionId, db) })
       toast.success(`Dropped ${db}.${name}`)
       setDialog(null)
@@ -116,7 +119,14 @@ export function CollectionLeaf({
           <button
             ref={buttonRef}
             type="button"
-            onClick={() => open({ connectionId, db, coll: name })}
+            onClick={(e) => (e.ctrlKey || e.metaKey ? openNew(target) : open(target))}
+            onMouseDown={(e) => {
+              // Middle-click opens a new tab; preventDefault suppresses Windows' autoscroll cursor.
+              if (e.button === 1) {
+                e.preventDefault()
+                openNew(target)
+              }
+            }}
             className={cn(
               'flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs transition-colors',
               isActive
@@ -129,9 +139,13 @@ export function CollectionLeaf({
           </button>
         </ContextMenuTrigger>
         <ContextMenuContent>
-          <ContextMenuItem onSelect={() => open({ connectionId, db, coll: name })}>
+          <ContextMenuItem onSelect={() => open(target)}>
             <Eye className="h-4 w-4" />
             Open
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => openNew(target)}>
+            <SquarePlus className="h-4 w-4" />
+            Open in new tab
           </ContextMenuItem>
           <ContextMenuItem onSelect={() => setDialog('info')}>
             <Info className="h-4 w-4" />
@@ -178,6 +192,7 @@ export function CollectionLeaf({
         connectionId={connectionId}
         db={db}
         coll={name}
+        timezone={timezone}
         onClose={() => setDialog(null)}
       />
 

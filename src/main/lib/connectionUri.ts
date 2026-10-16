@@ -9,6 +9,8 @@
  * and is invariant under accidental decode/encode round-trips by other code.
  */
 
+import { isIP } from 'node:net'
+
 const SCHEME_RE = /^(mongodb(?:\+srv)?):\/\//
 const PASSWORD_PLACEHOLDER = '%3CMONGOBENCH_PWD%3E'
 
@@ -141,4 +143,36 @@ export function ensurePasswordPlaceholder(storageUri: string): string {
 export function injectExternalCredentials(uri: string, username: string, password: string): string {
   const parts = parseUri(uri)
   return `${parts.schemeWithSep}${encodeURIComponent(username)}:${encodeURIComponent(password)}@${parts.hostAndRest}`
+}
+
+/**
+ * Swaps the host list of a `mongodb://` URI for one address, keeping credentials, database and options byte for byte.
+ * @param address `host:port` the driver should dial instead.
+ * @throws InvalidUriError for `mongodb+srv://`, whose hosts come from DNS.
+ */
+export function replaceHosts(uri: string, address: string): string {
+  const parts = parseUri(uri)
+  if (parts.scheme === 'mongodb+srv') {
+    throw new InvalidUriError('mongodb+srv:// cannot run through a single forwarded port')
+  }
+  // Raw slice, so an injected password or the placeholder survives unchanged.
+  const prefix = uri.slice(0, uri.length - parts.hostAndRest.length)
+  const stop = parts.hostAndRest.search(/[/?]/)
+  return prefix + address + (stop === -1 ? '' : parts.hostAndRest.slice(stop))
+}
+
+/**
+ * The first host of a URI when it is a DNS name, lower-cased, for TLS certificate checks.
+ * @returns null for IP literals (incl. `[…]`) and percent-encoded socket paths.
+ */
+export function firstHostName(uri: string): string | null {
+  const { hostAndRest } = parseUri(uri)
+  const stop = hostAndRest.search(/[/?]/)
+  const hosts = stop === -1 ? hostAndRest : hostAndRest.slice(0, stop)
+  const first = hosts.split(',')[0] ?? ''
+  if (first.startsWith('[')) return null
+  const colon = first.lastIndexOf(':')
+  const host = decodeURIComponent(colon === -1 ? first : first.slice(0, colon))
+  if (host.length === 0 || host.includes('/') || isIP(host) !== 0) return null
+  return host.toLowerCase()
 }

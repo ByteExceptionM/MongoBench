@@ -1,6 +1,10 @@
 import type { CreateIndexesOptions, IndexDirection, IndexSpecification } from 'mongodb'
 import { EJSON } from 'bson'
-import type { IndexCreateOptions, IndexInfo } from '@shared/types'
+import type { IndexCreateOptions, IndexInfo, IndexStatsReport } from '@shared/types'
+import { isDocument } from '@shared/writeOps'
+import { buildIndexStatsReport } from '../lib/indexStats'
+import { parseRelaxed, toRelaxed } from '../lib/ejson'
+import { validationError } from '../lib/errorMap'
 import type { ConnectionService } from './ConnectionService'
 
 /** Index management on a single collection. */
@@ -10,22 +14,18 @@ export class IndexService {
   async listIndexes(connectionId: string, db: string, coll: string): Promise<IndexInfo[]> {
     const client = this.connections.getClient(connectionId)
     const collection = client.db(db).collection(coll)
+    const raw = await collection.listIndexes().toArray()
+    return raw.map((info) => mapIndex(info as Record<string, unknown>))
+  }
 
-    const [raw, statsCursor] = await Promise.all([
-      collection.listIndexes().toArray(),
-      collection
-        .aggregate([{ $collStats: { storageStats: {} } }, { $limit: 1 }])
-        .toArray()
-        .catch(() => [] as Array<Record<string, unknown>>)
+  /** Per-index size, build state and usage; each source degrades on its own instead of failing. */
+  async indexStats(connectionId: string, db: string, coll: string): Promise<IndexStatsReport> {
+    const collection = this.connections.getClient(connectionId).db(db).collection(coll)
+    const [usage, storage] = await Promise.allSettled([
+      collection.aggregate([{ $indexStats: {} }]).toArray(),
+      collection.aggregate([{ $collStats: { storageStats: {} } }]).toArray()
     ])
-
-    const sizes =
-      ((statsCursor[0]?.['storageStats'] as Record<string, unknown> | undefined)?.['indexSizes'] as
-        Record<string, number> | undefined) ?? {}
-
-    return raw.map((info) =>
-      mapIndex(info as Record<string, unknown>, sizes[info['name'] as string])
-    )
+    return buildIndexStatsReport(usage, storage)
   }
 
   async createIndex(
@@ -38,7 +38,7 @@ export class IndexService {
     const client = this.connections.getClient(connectionId)
     const keys = parseObject(keysJson, 'keys')
     if (Object.keys(keys).length === 0) {
-      throwValidation('At least one key field is required')
+      throw validationError('At least one key field is required')
     }
     assertKeySpec(keys)
 
@@ -52,9 +52,11 @@ export class IndexService {
         driverOptions.expireAfterSeconds = options.expireAfterSeconds
       }
       if (options.partialFilterExpression !== undefined) {
+        // Filter bounds may be Int64 values beyond 2^53, which only a bigint keeps exact.
         driverOptions.partialFilterExpression = parseObject(
           options.partialFilterExpression,
-          'partialFilterExpression'
+          'partialFilterExpression',
+          parseRelaxed
         )
       }
       if (options.collation !== undefined) {
@@ -95,43 +97,49 @@ export class IndexService {
 
   async dropIndex(connectionId: string, db: string, coll: string, name: string): Promise<void> {
     if (name === '_id_') {
-      throwValidation('The default _id_ index cannot be dropped')
+      throw validationError('The default _id_ index cannot be dropped')
     }
     const client = this.connections.getClient(connectionId)
     await client.db(db).collection(coll).dropIndex(name)
   }
 }
 
-function parseObject(input: string, label: string): Record<string, unknown> {
+function parseObject(
+  input: string,
+  label: string,
+  parse: (text: string) => unknown = (text) => EJSON.parse(text, { relaxed: true })
+): Record<string, unknown> {
   let parsed: unknown
   try {
-    parsed = EJSON.parse(input, { relaxed: true })
+    parsed = parse(input)
   } catch (e) {
-    throwValidation(`${label} is not valid JSON: ${e instanceof Error ? e.message : String(e)}`)
+    throw validationError(
+      `${label} is not valid JSON: ${e instanceof Error ? e.message : String(e)}`
+    )
   }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throwValidation(`${label} must be a JSON object`)
+  if (!isDocument(parsed)) {
+    throw validationError(`${label} must be a JSON object`)
   }
-  return parsed as Record<string, unknown>
+  return parsed
 }
 
 function assertKeySpec(keys: Record<string, unknown>): void {
   for (const [field, direction] of Object.entries(keys)) {
-    if (field.length === 0) throwValidation('Key field name cannot be empty')
+    if (field.length === 0) throw validationError('Key field name cannot be empty')
     if (typeof direction === 'number' ? direction !== 1 && direction !== -1 : false) {
-      throwValidation(`Numeric direction for "${field}" must be 1 or -1`)
+      throw validationError(`Numeric direction for "${field}" must be 1 or -1`)
     }
     if (typeof direction === 'string') {
       if (!['text', '2dsphere', '2d', 'hashed'].includes(direction)) {
-        throwValidation(`Unknown index type "${direction}" for field "${field}"`)
+        throw validationError(`Unknown index type "${direction}" for field "${field}"`)
       }
     } else if (typeof direction !== 'number') {
-      throwValidation(`Direction for "${field}" must be 1, -1, or a string type`)
+      throw validationError(`Direction for "${field}" must be 1, -1, or a string type`)
     }
   }
 }
 
-function mapIndex(raw: Record<string, unknown>, size: number | undefined): IndexInfo {
+function mapIndex(raw: Record<string, unknown>): IndexInfo {
   const out: IndexInfo = {
     name: String(raw['name']),
     key: (raw['key'] as Record<string, IndexDirection>) ?? {}
@@ -143,14 +151,16 @@ function mapIndex(raw: Record<string, unknown>, size: number | undefined): Index
     out.expireAfterSeconds = Number(raw['expireAfterSeconds'])
   }
   if (raw['partialFilterExpression'] !== undefined) {
-    out.partialFilterExpression = raw['partialFilterExpression'] as Record<string, unknown>
+    out.partialFilterExpression = toRelaxed(raw['partialFilterExpression'])
   }
   if (raw['collation'] !== undefined) {
-    out.collation = raw['collation'] as Record<string, unknown>
+    out.collation = toRelaxed(raw['collation'])
   }
   if (raw['hidden'] !== undefined) out.hidden = Boolean(raw['hidden'])
   if (raw['background'] !== undefined) out.background = Boolean(raw['background'])
-  if (raw['weights'] !== undefined) out.weights = raw['weights'] as Record<string, number>
+  if (raw['weights'] !== undefined) {
+    out.weights = toRelaxed(raw['weights']) as Record<string, number>
+  }
   if (raw['default_language'] !== undefined) out.default_language = String(raw['default_language'])
   if (raw['language_override'] !== undefined) {
     out.language_override = String(raw['language_override'])
@@ -163,14 +173,7 @@ function mapIndex(raw: Record<string, unknown>, size: number | undefined): Index
   if (raw['min'] !== undefined) out.min = Number(raw['min'])
   if (raw['max'] !== undefined) out.max = Number(raw['max'])
   if (raw['wildcardProjection'] !== undefined) {
-    out.wildcardProjection = raw['wildcardProjection'] as Record<string, unknown>
+    out.wildcardProjection = toRelaxed(raw['wildcardProjection'])
   }
-  if (size !== undefined) out.size = size
   return out
-}
-
-function throwValidation(message: string): never {
-  const e = new Error(message)
-  e.name = 'ValidationError'
-  throw e
 }

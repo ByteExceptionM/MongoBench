@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
   canonicalize,
+  firstHostName,
   hasPasswordPlaceholder,
   injectStoredPassword,
   InvalidUriError,
-  parseUri
+  parseUri,
+  replaceHosts
 } from './connectionUri'
 
 describe('parseUri', () => {
@@ -124,5 +126,69 @@ describe('injectStoredPassword', () => {
     expect(canonical.password).toBe('p@ss:word')
     const restored = injectStoredPassword(canonical.storageUri, canonical.password!)
     expect(restored).toBe(original)
+  })
+})
+
+describe('replaceHosts', () => {
+  it('swaps every host and keeps credentials, database and options byte for byte', () => {
+    expect(
+      replaceHosts('mongodb://alice:p%40ss@h1:27017,h2:27018/db?authSource=admin', '127.0.0.1:5000')
+    ).toBe('mongodb://alice:p%40ss@127.0.0.1:5000/db?authSource=admin')
+  })
+
+  it('handles a URI with no path', () => {
+    expect(replaceHosts('mongodb://host', '127.0.0.1:5000')).toBe('mongodb://127.0.0.1:5000')
+  })
+
+  it('handles options without a slash before them', () => {
+    expect(replaceHosts('mongodb://host?tls=true', '127.0.0.1:5000')).toBe(
+      'mongodb://127.0.0.1:5000?tls=true'
+    )
+  })
+
+  it('keeps the stored password placeholder', () => {
+    expect(replaceHosts('mongodb://alice:%3CMONGOBENCH_PWD%3E@host/db', '127.0.0.1:5000')).toBe(
+      'mongodb://alice:%3CMONGOBENCH_PWD%3E@127.0.0.1:5000/db'
+    )
+  })
+
+  it('replaces an IPv6 literal', () => {
+    expect(replaceHosts('mongodb://[::1]:27017/db', '127.0.0.1:5000')).toBe(
+      'mongodb://127.0.0.1:5000/db'
+    )
+  })
+
+  it('rejects mongodb+srv://, whose hosts come from DNS', () => {
+    expect(() => replaceHosts('mongodb+srv://cluster.example.com/db', '127.0.0.1:5000')).toThrow(
+      InvalidUriError
+    )
+  })
+})
+
+describe('firstHostName', () => {
+  it('returns a DNS name in lower case, without the port', () => {
+    expect(firstHostName('mongodb://Mongo.Internal:27017/db')).toBe('mongo.internal')
+  })
+
+  it('returns null for an IPv4 literal', () => {
+    expect(firstHostName('mongodb://10.0.0.1:27017')).toBeNull()
+  })
+
+  it('returns null for an IPv6 literal', () => {
+    expect(firstHostName('mongodb://[::1]:27017')).toBeNull()
+  })
+
+  it('returns null for a percent-encoded socket path', () => {
+    expect(firstHostName('mongodb://%2Ftmp%2Fm.sock')).toBeNull()
+  })
+
+  it('returns the first host of a multi-host URI', () => {
+    expect(
+      firstHostName('mongodb://a.example.com:27017,b.example.com:27018/db?replicaSet=rs')
+    ).toBe('a.example.com')
+  })
+
+  it('ignores credentials', () => {
+    expect(firstHostName('mongodb://alice:p%40ss@db.example.com/admin')).toBe('db.example.com')
   })
 })

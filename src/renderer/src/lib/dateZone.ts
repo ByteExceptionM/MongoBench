@@ -13,19 +13,7 @@ export function formatIsoInZone(input: number | string | Date, tz: string): stri
 
   let parts: Intl.DateTimeFormatPart[]
   try {
-    parts = new Intl.DateTimeFormat('en-CA', {
-      timeZone: zone,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false,
-      hourCycle: 'h23',
-      fractionalSecondDigits: 3,
-      timeZoneName: 'longOffset'
-    }).formatToParts(d)
+    parts = zoneFormatter(zone).formatToParts(d)
   } catch {
     return d.toISOString()
   }
@@ -37,7 +25,9 @@ export function formatIsoInZone(input: number | string | Date, tz: string): stri
   const offset = tzn === 'GMT' || tzn === '' ? '+00:00' : tzn.replace('GMT', '').replace('−', '-')
   // Some Chromium builds report `24` for midnight under hourCycle: 'h23'.
   const hour = get('hour') === '24' ? '00' : get('hour')
-  return `${get('year')}-${get('month')}-${get('day')}T${hour}:${get('minute')}:${get('second')}.${ms}${offset}`
+  const iso = `${get('year')}-${get('month')}-${get('day')}T${hour}:${get('minute')}:${get('second')}.${ms}${offset}`
+  // Intl's local-mean-time offsets (+00:53:28), unpadded years and era-less BC years don't parse back.
+  return Date.parse(iso) === d.getTime() ? iso : d.toISOString()
 }
 
 /**
@@ -51,19 +41,7 @@ export function formatDateInZone(input: number | string | Date, tz: string): str
   const zone = tz && tz.length > 0 ? tz : 'UTC'
   let parts: Intl.DateTimeFormatPart[]
   try {
-    parts = new Intl.DateTimeFormat('en-CA', {
-      timeZone: zone,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false,
-      hourCycle: 'h23',
-      fractionalSecondDigits: 3,
-      timeZoneName: zone === 'UTC' ? undefined : 'longOffset'
-    }).formatToParts(d)
+    parts = zoneFormatter(zone).formatToParts(d)
   } catch {
     return d.toISOString()
   }
@@ -75,4 +53,28 @@ export function formatDateInZone(input: number | string | Date, tz: string): str
   const tzn = get('timeZoneName')
   const offset = tzn === 'GMT' || tzn === '' ? '+00:00' : tzn.replace('GMT', '').replace('−', '-')
   return `${base} ${offset}`
+}
+
+// Building a formatter costs far more than formatting with it; tables render many dates per zone.
+const formatters = new Map<string, Intl.DateTimeFormat>()
+
+function zoneFormatter(zone: string): Intl.DateTimeFormat {
+  let formatter = formatters.get(zone)
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone: zone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+      hourCycle: 'h23',
+      fractionalSecondDigits: 3,
+      timeZoneName: zone === 'UTC' ? undefined : 'longOffset'
+    })
+    formatters.set(zone, formatter)
+  }
+  return formatter
 }

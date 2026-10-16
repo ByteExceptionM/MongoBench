@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { toast } from 'sonner'
 import { Database, Eye, Plug, Power, Server, Table } from 'lucide-react'
 import { Dialog, DialogContent } from '@/components/ui/dialog'
 import {
@@ -11,8 +12,9 @@ import {
   CommandList
 } from '@/components/ui/command'
 import { notifyPinnedHostKey } from '@/features/connections/pinnedHostKeyToast'
-import { api } from '@/lib/api'
-import { queryKeys } from '@/lib/queryClient'
+import { api, ApiError } from '@/lib/api'
+import { formatConnectionAddress } from '@/lib/displayUri'
+import { queryKeys, releaseConnection } from '@/lib/queryClient'
 import { useAppStore } from '@/store'
 import { useExplorerStore } from '@/store/explorer'
 import { useTabsStore } from '@/store/tabs'
@@ -59,8 +61,6 @@ export function CommandPalette({ open, onOpenChange }: Props) {
   const queryClient = useQueryClient()
   const activeIds = useAppStore((s) => s.activeConnectionIds)
   const markConnected = useAppStore((s) => s.markConnected)
-  const markDisconnected = useAppStore((s) => s.markDisconnected)
-  const closeForConnection = useTabsStore((s) => s.closeForConnection)
   const openTab = useTabsStore((s) => s.open)
   const revealInExplorer = useExplorerStore((s) => s.reveal)
 
@@ -166,7 +166,7 @@ export function CommandPalette({ open, onOpenChange }: Props) {
     if (!q) return list
     const scored: Array<{ c: ConnectionConfig; score: number }> = []
     for (const c of list) {
-      const fields = [c.name, c.username ?? '', c.uri]
+      const fields = [c.name, c.username ?? '', formatConnectionAddress(c)]
       let best: number | null = null
       for (const f of fields) {
         const s = fuzzyScore(q, f.toLowerCase())
@@ -204,14 +204,14 @@ export function CommandPalette({ open, onOpenChange }: Props) {
                       onOpenChange(false)
                       if (activeIds.has(c.id)) {
                         await api.connections.disconnect(c.id).catch(() => undefined)
-                        markDisconnected(c.id)
-                        closeForConnection(c.id)
+                        releaseConnection(queryClient, c.id)
                       } else {
                         try {
                           notifyPinnedHostKey(await api.connections.connect(c.id))
                           markConnected(c.id)
-                        } catch {
-                          // toast handled at row level on the sidebar
+                        } catch (e: unknown) {
+                          const message = e instanceof ApiError ? e.message : String(e)
+                          toast.error(`Connect failed: ${message}`)
                         }
                       }
                     }}
@@ -277,7 +277,9 @@ function ConnectionRow({
       <Server className="h-4 w-4 text-muted-foreground" />
       <div className="min-w-0 flex-1">
         <div className="truncate text-sm">{conn.name}</div>
-        <div className="truncate font-mono text-[10px] text-muted-foreground">{conn.uri}</div>
+        <div className="truncate font-mono text-[10px] text-muted-foreground">
+          {formatConnectionAddress(conn)}
+        </div>
       </div>
       <span
         className={

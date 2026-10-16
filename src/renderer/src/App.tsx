@@ -7,6 +7,7 @@ import { CollectionTab } from '@/features/collection/CollectionTab'
 import { ConnectionDashboard } from '@/features/dashboard/ConnectionDashboard'
 import { ServerStatsCollector } from '@/features/dashboard/ServerStatsCollector'
 import { CommandPalette } from '@/features/palette/CommandPalette'
+import { showCloudflaredLogin } from '@/features/connections/cloudflaredLoginToast'
 import { UpdateNotifier } from '@/features/updater/UpdateNotifier'
 import { Welcome } from '@/features/welcome/Welcome'
 import { useTabsStore } from '@/store/tabs'
@@ -41,7 +42,7 @@ export default function App() {
   const onWelcome = !activeTab && !dashboardConnection
 
   // Main took a connection down without being asked — today that means a dead
-  // SSH tunnel. Subscribed here because the sidebar is not always mounted.
+  // tunnel. Subscribed here because the sidebar is not always mounted.
   // Open tabs are left alone: a drop is usually followed by a reconnect, and
   // discarding the user's queries over a network hiccup would be worse.
   useEffect(() => {
@@ -50,6 +51,9 @@ export default function App() {
       toast.error('Connection lost', { description: reason })
     })
   }, [markDisconnected])
+
+  // Sign-ins start from every place that connects, and mid-session once an Access session expires.
+  useEffect(() => api.cloudflared.onLogin(showCloudflaredLogin), [])
 
   return (
     <div className="flex h-full w-full bg-background text-foreground">

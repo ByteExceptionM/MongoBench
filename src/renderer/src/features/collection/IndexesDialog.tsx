@@ -1,16 +1,22 @@
-import { type FormEvent, type KeyboardEvent, useEffect, useMemo, useState } from 'react'
+import { type FormEvent, useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
+  ArrowDown,
   ArrowLeft,
+  ArrowUp,
+  ArrowUpDown,
   ChevronDown,
   ChevronRight,
+  CircleOff,
   EyeOff,
   Hash,
+  Info,
   Key,
   Loader2,
   Lock,
   Plus,
+  RefreshCw,
   ServerCrash,
   Sparkles,
   Timer,
@@ -25,6 +31,7 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
+import { AutocompleteInput } from '@/components/ui/autocomplete-input'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -46,16 +53,36 @@ import {
   AlertDialogHeader,
   AlertDialogTitle
 } from '@/components/ui/alert-dialog'
+import { Tooltip } from '@/components/ui/tooltip'
 import { api, ApiError } from '@/lib/api'
+import { collectionSchemaQuery } from '@/lib/completion/useCompletionEnv'
+import { formatDateInZone } from '@/lib/dateZone'
+import {
+  buildIndexRows,
+  formatAge,
+  formatCount,
+  formatRate,
+  nextSort,
+  sortIndexRows,
+  unavailableText,
+  usageAvailable,
+  usageNotes,
+  usageSources,
+  type IndexRow,
+  type IndexSort,
+  type IndexSortKey
+} from '@/lib/indexUsage'
 import { queryKeys } from '@/lib/queryClient'
 import { cn } from '@/lib/utils'
-import type { IndexCreateOptions, IndexInfo } from '@shared/types'
+import { schemaFieldPaths } from '@shared/collectionSchema'
+import type { IndexCreateOptions, IndexInfo, IndexStatsReport } from '@shared/types'
 
 type Props = {
   open: boolean
   connectionId: string
   db: string
   coll: string
+  timezone: string
   onClose: () => void
 }
 
@@ -70,18 +97,29 @@ const KEY_TYPE_OPTIONS: Array<{ value: string; label: string }> = [
   { value: 'hashed', label: 'Hashed' }
 ]
 
-export function IndexesDialog({ open, connectionId, db, coll, onClose }: Props) {
+export function IndexesDialog({ open, connectionId, db, coll, timezone, onClose }: Props) {
   const [view, setView] = useState<View>({ kind: 'list' })
   const [pendingDrop, setPendingDrop] = useState<IndexInfo | null>(null)
+  const [sort, setSort] = useState<IndexSort>(null)
   const queryClient = useQueryClient()
 
   useEffect(() => {
-    if (open) setView({ kind: 'list' })
+    if (open) {
+      setView({ kind: 'list' })
+      setSort(null)
+    }
   }, [open])
 
   const indexesQuery = useQuery({
     queryKey: queryKeys.indexes(connectionId, db, coll),
     queryFn: () => api.indexes.list({ connectionId, db, coll }),
+    enabled: open
+  })
+
+  // No polling: on mongos $indexStats fans out to every shard, so refresh stays manual.
+  const statsQuery = useQuery({
+    queryKey: queryKeys.indexStats(connectionId, db, coll),
+    queryFn: () => api.indexes.stats({ connectionId, db, coll }),
     enabled: open
   })
 
@@ -104,7 +142,7 @@ export function IndexesDialog({ open, connectionId, db, coll, onClose }: Props) 
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-3xl">
+      <DialogContent className="max-w-4xl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             {view.kind !== 'list' && (
@@ -131,6 +169,20 @@ export function IndexesDialog({ open, connectionId, db, coll, onClose }: Props) 
             isLoading={indexesQuery.isLoading}
             error={indexesQuery.error}
             indexes={indexesQuery.data ?? []}
+            // A failed refresh keeps the previous data; showing it beside the error would mislead.
+            report={statsQuery.isError ? undefined : statsQuery.data}
+            statsLoading={statsQuery.isLoading}
+            statsError={statsQuery.error}
+            now={statsQuery.dataUpdatedAt}
+            timezone={timezone}
+            sort={sort}
+            onSort={(key) => setSort((s) => nextSort(s, key))}
+            refreshing={indexesQuery.isFetching || statsQuery.isFetching}
+            onRefresh={() =>
+              void queryClient.invalidateQueries({
+                queryKey: queryKeys.indexes(connectionId, db, coll)
+              })
+            }
             onCreate={() => setView({ kind: 'create' })}
             onDrop={(idx) => setPendingDrop(idx)}
           />
@@ -185,15 +237,38 @@ function IndexesList({
   isLoading,
   error,
   indexes,
+  report,
+  statsLoading,
+  statsError,
+  now,
+  timezone,
+  sort,
+  onSort,
+  refreshing,
+  onRefresh,
   onCreate,
   onDrop
 }: {
   isLoading: boolean
   error: unknown
   indexes: IndexInfo[]
+  report: IndexStatsReport | undefined
+  statsLoading: boolean
+  statsError: Error | null
+  now: number
+  timezone: string
+  sort: IndexSort
+  onSort: (key: IndexSortKey) => void
+  refreshing: boolean
+  onRefresh: () => void
   onCreate: () => void
   onDrop: (idx: IndexInfo) => void
 }) {
+  const rows = useMemo(
+    () => sortIndexRows(buildIndexRows(indexes, report, now), sort),
+    [indexes, report, now, sort]
+  )
+
   if (isLoading) {
     return (
       <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
@@ -214,34 +289,92 @@ function IndexesList({
     )
   }
 
+  const usageUnavailable = report?.usageUnavailable ?? null
+  const storageUnavailable = report?.storageUnavailable ?? null
+  const hasUsage = usageAvailable(report)
+  const sizes = rows.flatMap((r) => (r.size === undefined ? [] : [r.size]))
+  const sources = report && hasUsage ? usageSources(report) : null
+
   return (
     <div className="grid gap-3">
       <div className="flex items-center justify-between">
         <div className="text-xs text-muted-foreground">
           {indexes.length} index{indexes.length === 1 ? '' : 'es'}
+          {sizes.length > 0 && ` · ${formatBytes(sizes.reduce((sum, size) => sum + size, 0))}`}
         </div>
-        <Button size="sm" onClick={onCreate}>
-          <Plus className="h-4 w-4" /> New index
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="ghost" onClick={onRefresh} disabled={refreshing}>
+            {refreshing ? (
+              <Loader2 className="animate-spin" />
+            ) : (
+              <RefreshCw className="h-3.5 w-3.5" />
+            )}
+            Refresh
+          </Button>
+          <Button size="sm" onClick={onCreate}>
+            <Plus className="h-4 w-4" /> New index
+          </Button>
+        </div>
       </div>
+      {(statsError !== null || usageUnavailable !== null || storageUnavailable !== null) && (
+        <div className="flex items-start gap-2 rounded-md border bg-muted/20 px-3 py-2 text-[11px] text-muted-foreground">
+          <Info className="mt-px h-3.5 w-3.5 shrink-0" />
+          <div className="grid gap-0.5">
+            {statsError !== null && (
+              <div>
+                Could not read index statistics: {statsError.message}{' '}
+                <button type="button" onClick={onRefresh} className="underline hover:no-underline">
+                  Retry
+                </button>
+              </div>
+            )}
+            {usageUnavailable !== null && (
+              <Tooltip content={usageUnavailable.message}>
+                <div className="w-fit">{unavailableText('usage', usageUnavailable)}</div>
+              </Tooltip>
+            )}
+            {storageUnavailable !== null && (
+              <Tooltip content={storageUnavailable.message}>
+                <div className="w-fit">{unavailableText('storage', storageUnavailable)}</div>
+              </Tooltip>
+            )}
+          </div>
+        </div>
+      )}
       <div className="max-h-[60vh] overflow-auto rounded-md border">
         <table className="w-full text-xs">
-          <thead className="sticky top-0 bg-muted/40 text-left text-[10px] uppercase tracking-wider text-muted-foreground">
-            <tr>
-              <th className="px-3 py-2 font-medium">Name</th>
+          {/* z-10: spinning badges are transformed and would otherwise paint over the sticky header. */}
+          <thead className="sticky top-0 z-10 bg-background text-left text-[10px] uppercase tracking-wider text-muted-foreground">
+            <tr className="bg-muted/40">
+              <SortableHeader label="Name" sortKey="name" sort={sort} onSort={onSort} />
               <th className="px-3 py-2 font-medium">Key</th>
               <th className="px-3 py-2 font-medium">Properties</th>
-              <th className="px-3 py-2 font-medium">Size</th>
+              <SortableHeader
+                label="Size"
+                sortKey="size"
+                sort={sort}
+                onSort={onSort}
+                disabled={report === undefined || storageUnavailable !== null}
+                alignRight
+              />
+              <SortableHeader
+                label="Usage"
+                sortKey="ops"
+                sort={sort}
+                onSort={onSort}
+                disabled={!hasUsage}
+                alignRight
+              />
               <th className="w-px px-3 py-2"></th>
             </tr>
           </thead>
           <tbody>
-            {indexes.map((idx) => (
-              <tr key={idx.name} className="border-t hover:bg-accent/30">
-                <td className="px-3 py-2 align-top font-mono">{idx.name}</td>
+            {rows.map((row) => (
+              <tr key={row.index.name} className="border-t hover:bg-accent/30">
+                <td className="px-3 py-2 align-top font-mono">{row.index.name}</td>
                 <td className="px-3 py-2 align-top">
                   <div className="flex flex-wrap gap-1 font-mono">
-                    {Object.entries(idx.key).map(([field, dir]) => (
+                    {Object.entries(row.index.key).map(([field, dir]) => (
                       <span
                         key={field}
                         className="rounded-sm border bg-background px-1.5 py-0.5 text-[10px]"
@@ -253,7 +386,7 @@ function IndexesList({
                 </td>
                 <td className="px-3 py-2 align-top">
                   <div className="flex flex-wrap gap-1">
-                    {indexBadges(idx).map((b) => (
+                    {indexBadges(row.index, row.building).map((b) => (
                       <span
                         key={b.label}
                         className="flex items-center gap-1 rounded-sm border bg-background px-1.5 py-0.5 text-[10px]"
@@ -265,19 +398,30 @@ function IndexesList({
                     ))}
                   </div>
                 </td>
-                <td className="px-3 py-2 align-top font-mono text-[10px] text-muted-foreground">
-                  {idx.size !== undefined ? formatBytes(idx.size) : '—'}
+                <td className="whitespace-nowrap px-3 py-2 text-right align-top font-mono text-[10px] tabular-nums text-muted-foreground">
+                  {statsLoading ? '…' : row.size !== undefined ? formatBytes(row.size) : '—'}
+                </td>
+                <td className="whitespace-nowrap px-3 py-2 text-right align-top tabular-nums">
+                  <UsageCell
+                    row={row}
+                    statsLoading={statsLoading}
+                    hasUsage={hasUsage}
+                    now={now}
+                    timezone={timezone}
+                  />
                 </td>
                 <td className="px-3 py-2 align-top">
                   <Button
                     size="icon"
                     variant="ghost"
                     className="h-7 w-7 text-destructive hover:bg-destructive/10 hover:text-destructive disabled:text-muted-foreground"
-                    disabled={idx.name === '_id_'}
-                    onClick={() => onDrop(idx)}
+                    disabled={row.index.name === '_id_'}
+                    onClick={() => onDrop(row.index)}
                     aria-label="Drop"
                     title={
-                      idx.name === '_id_' ? 'The default _id_ index cannot be dropped' : 'Drop'
+                      row.index.name === '_id_'
+                        ? 'The default _id_ index cannot be dropped'
+                        : 'Drop'
                     }
                   >
                     <Trash2 className="h-3.5 w-3.5" />
@@ -288,15 +432,154 @@ function IndexesList({
           </tbody>
         </table>
       </div>
+      {sources !== null && sources.hosts.length > 0 && (
+        <p className="text-[10px] text-muted-foreground">
+          {sources.hosts.length === 1
+            ? `Usage counted on ${sources.hosts[0]} only; counters reset when it restarts or the index changes.`
+            : `Usage summed over ${sources.hosts.length} mongods${
+                sources.shards.length > 0
+                  ? ` across ${sources.shards.length} shard${sources.shards.length === 1 ? '' : 's'}`
+                  : ''
+              }; counters reset when a mongod restarts.`}
+        </p>
+      )}
     </div>
   )
 }
 
-function indexBadges(idx: IndexInfo): Array<{ label: string; icon: JSX.Element; title?: string }> {
+function SortableHeader({
+  label,
+  sortKey,
+  sort,
+  onSort,
+  disabled,
+  alignRight
+}: {
+  label: string
+  sortKey: IndexSortKey
+  sort: IndexSort
+  onSort: (key: IndexSortKey) => void
+  disabled?: boolean
+  alignRight?: boolean
+}) {
+  const dir = sort?.key === sortKey ? sort.dir : null
+  const Icon = dir === 'asc' ? ArrowUp : dir === 'desc' ? ArrowDown : ArrowUpDown
+  return (
+    <th
+      className={cn('px-3 py-2 font-medium', alignRight && 'text-right')}
+      aria-sort={dir === 'asc' ? 'ascending' : dir === 'desc' ? 'descending' : undefined}
+    >
+      <button
+        type="button"
+        onClick={() => onSort(sortKey)}
+        disabled={disabled}
+        className={cn(
+          'inline-flex items-center gap-1 uppercase hover:text-foreground disabled:pointer-events-none disabled:opacity-50',
+          // The icon leads in right-aligned columns so the label lines up with the values.
+          alignRight && 'flex-row-reverse'
+        )}
+      >
+        {label}
+        <Icon className={cn('h-3 w-3', dir === null && 'opacity-40')} />
+      </button>
+    </th>
+  )
+}
+
+function UsageCell({
+  row,
+  statsLoading,
+  hasUsage,
+  now,
+  timezone
+}: {
+  row: IndexRow
+  statsLoading: boolean
+  hasUsage: boolean
+  now: number
+  timezone: string
+}) {
+  if (statsLoading) return <span className="text-muted-foreground">…</span>
+  if (row.building) return <span className="text-[10px] text-muted-foreground">building</span>
+  if (!hasUsage) return <span className="text-muted-foreground">—</span>
+  const { usage } = row
+  if (usage === null) {
+    return (
+      <Tooltip content="No usage reported for this index.">
+        <span className="text-muted-foreground">—</span>
+      </Tooltip>
+    )
+  }
+
+  const notes = usageNotes(row, now)
+  return (
+    <Tooltip
+      content={
+        <div className="grid gap-0.5">
+          <div>
+            {usage.ops.toLocaleString('en-US')} ops since {formatDateInZone(usage.since, timezone)}
+          </div>
+          {usage.hosts.length > 1 &&
+            usage.hosts.map((h, i) => (
+              <div key={i} className="font-mono text-[10px]">
+                {h.shard !== undefined && `${h.shard} · `}
+                {h.host} — {h.ops.toLocaleString('en-US')} since{' '}
+                {formatDateInZone(h.since, timezone)}
+              </div>
+            ))}
+          {notes.map((note) => (
+            <div key={note}>{note}</div>
+          ))}
+        </div>
+      }
+    >
+      <div>
+        <div
+          className={cn(
+            'font-mono',
+            row.unused ? 'text-amber-400' : usage.ops === 0 && 'text-muted-foreground'
+          )}
+        >
+          {formatCount(usage.ops)}
+        </div>
+        {row.unused ? (
+          <div className="flex items-center justify-end gap-1 text-[10px] text-amber-400">
+            <CircleOff className="h-3 w-3" />
+            unused for {formatAge(now - usage.coveredSince)}
+          </div>
+        ) : (
+          <div className="text-[10px] text-muted-foreground">
+            {usage.ops > 0 && usage.opsPerDay !== null
+              ? `${formatRate(usage.opsPerDay)} over ${formatAge(now - usage.since)}`
+              : `over ${formatAge(now - usage.since)}`}
+          </div>
+        )}
+      </div>
+    </Tooltip>
+  )
+}
+
+function indexBadges(
+  idx: IndexInfo,
+  building: boolean
+): Array<{ label: string; icon: JSX.Element; title?: string }> {
   const badges: Array<{ label: string; icon: JSX.Element; title?: string }> = []
+  if (building) {
+    badges.push({
+      label: 'building',
+      icon: <Loader2 className="h-3 w-3 animate-spin" />,
+      title: 'Index build in progress'
+    })
+  }
   if (idx.unique) badges.push({ label: 'unique', icon: <Lock className="h-3 w-3" /> })
   if (idx.sparse) badges.push({ label: 'sparse', icon: <Sparkles className="h-3 w-3" /> })
-  if (idx.hidden) badges.push({ label: 'hidden', icon: <EyeOff className="h-3 w-3" /> })
+  if (idx.hidden) {
+    badges.push({
+      label: 'hidden',
+      icon: <EyeOff className="h-3 w-3" />,
+      title: 'Hidden from the query planner'
+    })
+  }
   if (idx.expireAfterSeconds !== undefined) {
     badges.push({
       label: `TTL ${idx.expireAfterSeconds}s`,
@@ -395,12 +678,10 @@ function CreateIndexForm({
   const [showAdvanced, setShowAdvanced] = useState(false)
   const queryClient = useQueryClient()
 
-  // Sample a handful of documents to offer their field paths as completions.
   // Best-effort: an empty or failed sample just means no suggestions.
   const fieldPathsQuery = useQuery({
-    queryKey: queryKeys.fieldPaths(connectionId, db, coll),
-    queryFn: () => api.query.find({ connectionId, db, coll, skip: 0, limit: 50 }),
-    select: (res) => collectFieldPaths(res.documents.map((d) => d.data))
+    ...collectionSchemaQuery(connectionId, db, coll),
+    select: schemaFieldPaths
   })
   const fieldSuggestions = fieldPathsQuery.data ?? []
 
@@ -508,11 +789,14 @@ function CreateIndexForm({
         <div className="grid gap-2">
           {state.rows.map((row, i) => (
             <div key={i} className="flex items-center gap-2">
-              <FieldPathInput
+              <AutocompleteInput
+                wrapperClassName="flex-1"
                 value={row.field}
-                onChange={(field) => updateRow(i, { field })}
+                onValueChange={(field) => updateRow(i, { field })}
                 suggestions={fieldSuggestions}
                 autoFocus={i === 0}
+                placeholder="field.path  (use foo.$**  for wildcard)"
+                spellCheck={false}
               />
               <div className="w-44">
                 <Select value={row.type} onValueChange={(v) => updateRow(i, { type: v })}>
@@ -858,145 +1142,6 @@ function EjsonField({
       {parseError && <p className="text-xs text-destructive">{parseError}</p>}
     </div>
   )
-}
-
-/**
- * Field-path input with completion from sampled documents. Tab or Enter
- * accepts the highlighted suggestion, arrow keys navigate, Escape closes
- * the list (without closing the surrounding dialog).
- */
-function FieldPathInput({
-  value,
-  onChange,
-  suggestions,
-  autoFocus
-}: {
-  value: string
-  onChange: (v: string) => void
-  suggestions: string[]
-  autoFocus?: boolean
-}) {
-  const [open, setOpen] = useState(false)
-  const [active, setActive] = useState(0)
-
-  const matches = useMemo(() => {
-    const needle = value.trim().toLowerCase()
-    const pool = needle ? suggestions.filter((s) => s.toLowerCase().includes(needle)) : suggestions
-    const sorted = needle
-      ? [...pool].sort((a, b) => {
-          const aPrefix = a.toLowerCase().startsWith(needle) ? 0 : 1
-          const bPrefix = b.toLowerCase().startsWith(needle) ? 0 : 1
-          return aPrefix - bPrefix || a.localeCompare(b)
-        })
-      : pool
-    // Nothing left to complete once the value matches the only candidate.
-    if (sorted.length === 1 && sorted[0] === value.trim()) return []
-    return sorted.slice(0, 50)
-  }, [value, suggestions])
-
-  useEffect(() => {
-    setActive(0)
-  }, [value])
-
-  const accept = (s: string) => {
-    onChange(s)
-    setOpen(false)
-  }
-
-  const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (!open || matches.length === 0) return
-    if (e.key === 'ArrowDown') {
-      e.preventDefault()
-      setActive((i) => (i + 1) % matches.length)
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault()
-      setActive((i) => (i - 1 + matches.length) % matches.length)
-    } else if (e.key === 'Tab' || e.key === 'Enter') {
-      e.preventDefault()
-      accept(matches[active] ?? matches[0]!)
-    } else if (e.key === 'Escape') {
-      e.preventDefault()
-      e.stopPropagation()
-      setOpen(false)
-    }
-  }
-
-  return (
-    <div className="relative flex-1">
-      <Input
-        value={value}
-        onChange={(e) => {
-          onChange(e.target.value)
-          setOpen(true)
-        }}
-        onFocus={() => setOpen(true)}
-        onBlur={() => setOpen(false)}
-        onKeyDown={onKeyDown}
-        placeholder="field.path  (use foo.$**  for wildcard)"
-        spellCheck={false}
-        className="w-full font-mono"
-        autoFocus={autoFocus}
-        role="combobox"
-        aria-expanded={open && matches.length > 0}
-        aria-autocomplete="list"
-      />
-      {open && matches.length > 0 && (
-        <ul
-          className="absolute left-0 right-0 top-full z-50 mt-1 max-h-40 overflow-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
-          role="listbox"
-          // Keep focus in the input so onBlur doesn't close the list
-          // before an option click registers.
-          onMouseDown={(e) => e.preventDefault()}
-        >
-          {matches.map((s, i) => (
-            <li
-              key={s}
-              role="option"
-              aria-selected={i === active}
-              onMouseEnter={() => setActive(i)}
-              onClick={() => accept(s)}
-              className={cn(
-                'cursor-pointer rounded-sm px-2 py-1 font-mono text-xs',
-                i === active ? 'bg-accent text-accent-foreground' : 'text-foreground'
-              )}
-            >
-              {s}
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  )
-}
-
-const MAX_FIELD_PATH_DEPTH = 4
-
-/**
- * Distinct dot-notation field paths across the sampled documents, sorted.
- * `data` is relaxed EJSON, so objects whose keys all start with `$`
- * (e.g. { $oid }, { $date }) are type wrappers, not subdocuments. Array
- * elements share their parent path, matching how indexes address them.
- */
-function collectFieldPaths(docs: Array<Record<string, unknown>>): string[] {
-  const paths = new Set<string>()
-  const visit = (value: unknown, prefix: string, depth: number): void => {
-    if (depth > MAX_FIELD_PATH_DEPTH || value === null || typeof value !== 'object') return
-    if (Array.isArray(value)) {
-      for (const item of value) visit(item, prefix, depth)
-      return
-    }
-    const obj = value as Record<string, unknown>
-    const keys = Object.keys(obj)
-    if (prefix && keys.length > 0 && keys.every((k) => k.startsWith('$'))) return
-    for (const key of keys) {
-      if (key.startsWith('$')) continue
-      const path = prefix ? `${prefix}.${key}` : key
-      paths.add(path)
-      visit(obj[key], path, depth + 1)
-    }
-  }
-  for (const doc of docs) visit(doc, '', 0)
-  return Array.from(paths).sort((a, b) => a.localeCompare(b))
 }
 
 function validateForm(state: FormState, ttlEligible: boolean): string | null {

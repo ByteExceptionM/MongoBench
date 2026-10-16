@@ -13,9 +13,13 @@ import {
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { api, ApiError } from '@/lib/api'
+import { useCompletionAttachment } from '@/lib/completion/useCompletionAttachment'
+import { useCompletionEnv } from '@/lib/completion/useCompletionEnv'
+import { BASE_EDITOR_OPTIONS } from '@/lib/monacoSetup'
+import { invalidateWrittenCollection } from '@/lib/queryClient'
 import { parseMongoDocuments, parseMongoQuery } from '@/lib/mongoQueryLang'
 import { serializeMongoValue } from '@/lib/mongoQuerySerialize'
-import type { DocumentEnvelope, UuidEncoding } from '@shared/types'
+import { MAX_INSERT_DOCUMENTS, type DocumentEnvelope, type UuidEncoding } from '@shared/types'
 
 export type EditorMode = 'view' | 'edit' | 'duplicate' | 'insert'
 
@@ -99,6 +103,19 @@ export function DocumentEditorDialog({
   const [value, setValue] = useState('')
   const [serverError, setServerError] = useState<string | null>(null)
   const queryClient = useQueryClient()
+  const isReadOnly = mode === 'view'
+  const completionEnv = useCompletionEnv({
+    connectionId,
+    db,
+    coll,
+    uuidEncoding,
+    timezone,
+    enabled: open && !isReadOnly
+  })
+  // The editor remounts per mode (its key), so read-only never changes for one instance.
+  const bindCompletion = useCompletionAttachment(
+    isReadOnly ? null : { kind: 'document', env: completionEnv }
+  )
 
   useEffect(() => {
     if (!mode) return
@@ -120,6 +137,12 @@ export function DocumentEditorDialog({
       const parsed = parseMongoDocuments(value)
       if (!parsed.ok) return { ok: false, error: parsed.error }
       if (parsed.documents.length === 0) return { ok: false, error: 'Enter at least one document' }
+      if (parsed.documents.length > MAX_INSERT_DOCUMENTS) {
+        return {
+          ok: false,
+          error: `At most ${MAX_INSERT_DOCUMENTS.toLocaleString('en-US')} documents per insert`
+        }
+      }
       return { ok: true, ejson: '', documents: parsed.documents }
     }
     const parsed = parseMongoQuery(value)
@@ -138,6 +161,7 @@ export function DocumentEditorDialog({
       if (!compiled.ok) throw new Error(compiled.error)
       if (mode === 'edit') {
         if (!envelope) throw new Error('No document loaded')
+        if (envelope.id === null) throw new Error('Document has no _id')
         return api.query.replaceOne({
           connectionId,
           db,
@@ -156,8 +180,7 @@ export function DocumentEditorDialog({
       throw new Error('Cannot save in view mode')
     },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['find'] })
-      void queryClient.invalidateQueries({ queryKey: ['count'] })
+      void invalidateWrittenCollection(queryClient, { connectionId, db, coll })
       const successMessage =
         mode === 'edit'
           ? 'Document updated'
@@ -168,6 +191,10 @@ export function DocumentEditorDialog({
       onClose()
     },
     onError: (e: unknown) => {
+      // An ordered insertMany keeps the documents written before the failing one.
+      if (mode === 'insert') {
+        void invalidateWrittenCollection(queryClient, { connectionId, db, coll })
+      }
       const message = e instanceof ApiError ? e.message : String(e)
       setServerError(message)
     }
@@ -183,7 +210,6 @@ export function DocumentEditorDialog({
   if (mode !== 'insert' && !envelope) return null
 
   const parseError = compiled.ok ? null : compiled.error
-  const isReadOnly = mode === 'view'
   const ctaLabel =
     mode === 'edit'
       ? 'Save changes'
@@ -223,7 +249,7 @@ export function DocumentEditorDialog({
           }
         >
           <Editor
-            key={mode === 'insert' ? 'insert' : `${envelope?.id}::${mode}`}
+            key={mode === 'insert' ? 'insert' : `${envelope?.id ?? 'noid'}::${mode}`}
             height="100%"
             width="100%"
             value={value}
@@ -234,8 +260,10 @@ export function DocumentEditorDialog({
                 Loading editor…
               </div>
             }
+            onMount={bindCompletion}
             onChange={(v) => setValue(v ?? '')}
             options={{
+              ...BASE_EDITOR_OPTIONS,
               readOnly: isReadOnly,
               domReadOnly: isReadOnly,
               minimap: { enabled: false },
@@ -250,7 +278,9 @@ export function DocumentEditorDialog({
               padding: { top: 8, bottom: 8 },
               autoClosingBrackets: 'always',
               autoClosingQuotes: 'always',
-              bracketPairColorization: { enabled: true }
+              bracketPairColorization: { enabled: true },
+              // Typing values must not pop up suggestions that Enter would accept.
+              quickSuggestions: false
             }}
           />
         </div>
