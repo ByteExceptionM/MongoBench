@@ -1,8 +1,41 @@
-import { cloneElement, useEffect, useRef, useState, type ReactElement, type Ref } from 'react'
+import {
+  cloneElement,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactElement,
+  type Ref
+} from 'react'
 import { createPortal } from 'react-dom'
 import { cn } from '@/lib/utils'
 
 type Side = 'top' | 'bottom'
+
+type Box = { top: number; left: number }
+
+const GAP = 8
+const EDGE_MARGIN = 8
+
+/**
+ * Places a tooltip of `size` next to `trigger`, on the other side when `side` lacks room.
+ * @returns Viewport coordinates of the tooltip's top-left corner, kept inside the window.
+ */
+export function placeTooltip(
+  trigger: { top: number; bottom: number; left: number; width: number },
+  size: { width: number; height: number },
+  viewport: { width: number; height: number },
+  side: Side
+): Box {
+  const above = trigger.top - GAP - size.height
+  const below = trigger.bottom + GAP
+  const fitsAbove = above >= EDGE_MARGIN
+  const fitsBelow = below + size.height <= viewport.height - EDGE_MARGIN
+  const top = side === 'top' ? (fitsAbove ? above : below) : fitsBelow ? below : above
+  const centered = trigger.left + trigger.width / 2 - size.width / 2
+  const left = Math.max(EDGE_MARGIN, Math.min(centered, viewport.width - EDGE_MARGIN - size.width))
+  return { top, left }
+}
 
 type TriggerProps = {
   ref?: Ref<HTMLElement>
@@ -28,44 +61,35 @@ type Props = {
  * tokens so it doesn't look like the OS-native yellow `title` bubble.
  *
  * Positions via fixed coordinates measured against the trigger's bounding
- * rect; the tooltip itself is rendered into a portal at `document.body`
- * to escape the parent's overflow clipping (relevant for the document
- * table's scroll container).
+ * rect and its own rendered size; the tooltip itself is rendered into a
+ * portal at `document.body` to escape the parent's overflow clipping
+ * (relevant for the document table's scroll container).
  */
 export function Tooltip({ content, children, delay = 350, side = 'top', disabled }: Props) {
   const [open, setOpen] = useState(false)
-  const [box, setBox] = useState<{ top: number; left: number; placement: Side }>({
-    top: 0,
-    left: 0,
-    placement: side
-  })
+  const [box, setBox] = useState<Box>({ top: 0, left: 0 })
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const triggerRef = useRef<HTMLElement | null>(null)
+  const tooltipRef = useRef<HTMLDivElement | null>(null)
 
-  const measure = (): void => {
-    if (!triggerRef.current) return
-    const rect = triggerRef.current.getBoundingClientRect()
-    const gap = 8
-    let placement: Side = side
-    let top = placement === 'top' ? rect.top - gap : rect.bottom + gap
-    if (placement === 'top' && top < 28) {
-      placement = 'bottom'
-      top = rect.bottom + gap
-    } else if (placement === 'bottom' && top > window.innerHeight - 28) {
-      placement = 'top'
-      top = rect.top - gap
-    }
-    const left = Math.min(Math.max(rect.left + rect.width / 2, 16), window.innerWidth - 16)
-    setBox({ top, left, placement })
-  }
+  // Placement needs the rendered size; a layout effect corrects it before the first paint.
+  useLayoutEffect(() => {
+    const trigger = triggerRef.current
+    const tooltip = tooltipRef.current
+    if (!open || !trigger || !tooltip) return
+    const next = placeTooltip(
+      trigger.getBoundingClientRect(),
+      { width: tooltip.offsetWidth, height: tooltip.offsetHeight },
+      { width: window.innerWidth, height: window.innerHeight },
+      side
+    )
+    setBox((prev) => (prev.top === next.top && prev.left === next.left ? prev : next))
+  }, [open, content, side])
 
   const show = (): void => {
     if (disabled) return
     if (timerRef.current) clearTimeout(timerRef.current)
-    timerRef.current = setTimeout(() => {
-      measure()
-      setOpen(true)
-    }, delay)
+    timerRef.current = setTimeout(() => setOpen(true), delay)
   }
   const hide = (): void => {
     if (timerRef.current) {
@@ -135,16 +159,14 @@ export function Tooltip({ content, children, delay = 350, side = 'top', disabled
         visibleContent &&
         createPortal(
           <div
+            ref={tooltipRef}
             role="tooltip"
             className={cn(
-              'pointer-events-none fixed z-[200] max-w-sm rounded-md border border-border bg-popover px-2 py-1 text-xs leading-snug text-popover-foreground shadow-lg',
+              // w-max: a fixed box otherwise shrinks to the room right of `left` near the edge.
+              'pointer-events-none fixed z-[200] w-max max-w-sm rounded-md border border-border bg-popover px-2 py-1 text-xs leading-snug text-popover-foreground shadow-lg',
               'animate-in fade-in-0 zoom-in-95 duration-100'
             )}
-            style={{
-              top: box.top,
-              left: box.left,
-              transform: box.placement === 'top' ? 'translate(-50%, -100%)' : 'translate(-50%, 0)'
-            }}
+            style={{ top: box.top, left: box.left }}
           >
             {content}
           </div>,

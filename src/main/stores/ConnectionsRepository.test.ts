@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ConnectionInput, SshTunnelInput } from '@shared/types'
+import type { CloudflaredTunnelInput, ConnectionInput, SshTunnelInput } from '@shared/types'
 
 // The repository imports electron for the default userData path; every test
 // passes an explicit directory instead, so getPath is never actually called.
@@ -26,6 +26,7 @@ const secrets = {
 const SSH_PASSWORD = 'ssh-cleartext-password'
 const SSH_PASSPHRASE = 'key-cleartext-passphrase'
 const MONGO_PASSWORD = 'mongo-cleartext-password'
+const TOKEN_SECRET = 'cfast_cleartext-token-secret'
 
 let dir: string
 let repo: InstanceType<typeof ConnectionsRepository>
@@ -58,6 +59,21 @@ function input(ssh?: Partial<SshTunnelInput>): ConnectionInput {
           }
         }
       : {})
+  }
+}
+
+function cloudflaredInput(cloudflared: Partial<CloudflaredTunnelInput>): ConnectionInput {
+  return {
+    name: 'Behind Access',
+    uri: 'mongodb://user@localhost/admin',
+    password: MONGO_PASSWORD,
+    cloudflared: {
+      enabled: true,
+      hostname: 'mongo.example.com',
+      authMethod: 'serviceToken',
+      serviceTokenId: 'abc.access',
+      ...cloudflared
+    }
   }
 }
 
@@ -154,6 +170,90 @@ describe('secrets across edits', () => {
   })
 })
 
+describe('Cloudflare service token secret', () => {
+  it('never writes the cleartext secret and decrypts it back', async () => {
+    const created = await repo.create(cloudflaredInput({ serviceTokenSecret: TOKEN_SECRET }))
+    const stored = await repo.getStored(created.id)
+
+    expect(await onDisk()).not.toContain(TOKEN_SECRET)
+    expect(stored?.cloudflared?.encryptedServiceTokenSecret).toMatch(/^enc:/)
+    expect(repo.decryptCloudflared(stored!)).toEqual({ serviceTokenSecret: TOKEN_SECRET })
+  })
+
+  it('keeps the stored secret when the form leaves it blank', async () => {
+    const created = await repo.create(cloudflaredInput({ serviceTokenSecret: TOKEN_SECRET }))
+    await repo.update(created.id, cloudflaredInput({ serviceTokenSecret: '' }))
+    const stored = await repo.getStored(created.id)
+    expect(repo.decryptCloudflared(stored!)).toEqual({ serviceTokenSecret: TOKEN_SECRET })
+  })
+
+  it.each([
+    ['hostname', { hostname: 'other-app.example.com' }],
+    ['client ID', { serviceTokenId: 'other.access' }]
+  ])(
+    'drops the saved secret when the %s changes and the form leaves it blank',
+    async (_case, edit) => {
+      const created = await repo.create(cloudflaredInput({ serviceTokenSecret: TOKEN_SECRET }))
+      await repo.update(created.id, cloudflaredInput({ ...edit, serviceTokenSecret: '' }))
+      const stored = await repo.getStored(created.id)
+      expect(stored?.cloudflared?.encryptedServiceTokenSecret).toBeUndefined()
+      expect(repo.decryptCloudflared(stored!)).toEqual({})
+    }
+  )
+
+  it('stores the secret typed together with a new hostname', async () => {
+    const created = await repo.create(cloudflaredInput({ serviceTokenSecret: TOKEN_SECRET }))
+    await repo.update(
+      created.id,
+      cloudflaredInput({ hostname: 'other-app.example.com', serviceTokenSecret: 'other-secret' })
+    )
+    const stored = await repo.getStored(created.id)
+    expect(repo.decryptCloudflared(stored!)).toEqual({ serviceTokenSecret: 'other-secret' })
+  })
+
+  it('drops the secret when switching to browser sign-in', async () => {
+    const created = await repo.create(cloudflaredInput({ serviceTokenSecret: TOKEN_SECRET }))
+    await repo.update(created.id, cloudflaredInput({ authMethod: 'browser' }))
+    const stored = await repo.getStored(created.id)
+    expect(stored?.cloudflared?.encryptedServiceTokenSecret).toBeUndefined()
+    expect(repo.decryptCloudflared(stored!)).toEqual({})
+  })
+
+  it('stores no secret typed while browser sign-in is selected', async () => {
+    const created = await repo.create(
+      cloudflaredInput({ authMethod: 'browser', serviceTokenSecret: TOKEN_SECRET })
+    )
+    const stored = await repo.getStored(created.id)
+    expect(stored?.cloudflared?.encryptedServiceTokenSecret).toBeUndefined()
+  })
+
+  it('keeps the tunnel settings when it is switched off', async () => {
+    const created = await repo.create(
+      cloudflaredInput({ serviceTokenSecret: TOKEN_SECRET, binaryPath: 'C:\\cf\\cloudflared.exe' })
+    )
+    await repo.update(created.id, cloudflaredInput({ enabled: false, serviceTokenSecret: '' }))
+    const stored = await repo.getStored(created.id)
+    expect(stored?.cloudflared).toMatchObject({
+      enabled: false,
+      hostname: 'mongo.example.com',
+      serviceTokenId: 'abc.access'
+    })
+    expect(repo.decryptCloudflared(stored!)).toEqual({ serviceTokenSecret: TOKEN_SECRET })
+  })
+
+  it('stores blank optional fields as absent', async () => {
+    const created = await repo.create(
+      cloudflaredInput({ authMethod: 'browser', serviceTokenId: '', binaryPath: '' })
+    )
+    const stored = await repo.getStored(created.id)
+    expect(Object.keys(stored?.cloudflared ?? {}).sort()).toEqual([
+      'authMethod',
+      'enabled',
+      'hostname'
+    ])
+  })
+})
+
 describe('toRendererView', () => {
   it('replaces the SSH secrets with hasStored flags', async () => {
     const created = await repo.create(input({ password: SSH_PASSWORD }))
@@ -193,6 +293,23 @@ describe('toRendererView', () => {
     const created = await repo.create(input())
     const view = toRendererView((await repo.getStored(created.id))!)
     expect(view.ssh).toBeUndefined()
+    expect(view.cloudflared).toBeUndefined()
     expect(view.hasStoredPassword).toBe(true)
+  })
+
+  it('replaces the service token secret with a hasStored flag', async () => {
+    const created = await repo.create(cloudflaredInput({ serviceTokenSecret: TOKEN_SECRET }))
+    const view = toRendererView((await repo.getStored(created.id))!)
+
+    expect(view.cloudflared).toEqual({
+      enabled: true,
+      hostname: 'mongo.example.com',
+      authMethod: 'serviceToken',
+      serviceTokenId: 'abc.access',
+      hasStoredServiceTokenSecret: true
+    })
+    const serialized = JSON.stringify(view)
+    expect(serialized).not.toContain(CIPHER_PREFIX)
+    expect(serialized).not.toContain(TOKEN_SECRET)
   })
 })

@@ -51,7 +51,7 @@ export function TimezoneSelect({ value, onChange, id }: Props) {
   }, [open])
 
   return (
-    <div ref={rootRef} className="relative">
+    <div ref={rootRef} className="relative" data-consumes-escape={open ? '' : undefined}>
       <button
         id={id}
         type="button"

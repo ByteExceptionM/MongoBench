@@ -5,6 +5,8 @@ import log from 'electron-log/main'
 import type { ZodType } from 'zod'
 import {
   AggregateRequestSchema,
+  CancelQuerySchema,
+  CloudflaredVersionSchema,
   CollectionRefSchema,
   ConnectionIdSchema,
   ConnectionInputSchema,
@@ -19,6 +21,7 @@ import {
   DatabaseRefSchema,
   DeleteManyRequestSchema,
   DeleteOneRequestSchema,
+  DistinctRequestSchema,
   DropIndexSchema,
   DropUserSchema,
   FindRequestSchema,
@@ -28,12 +31,14 @@ import {
   RenameCollectionSchema,
   ReorderConnectionsSchema,
   ReplaceOneRequestSchema,
-  UpdateUserSchema
+  UpdateUserSchema,
+  WriteRequestSchema
 } from '@shared/schemas'
 import type { Result } from '@shared/result'
 import { err, ok } from '@shared/result'
 import { mapError } from '../lib/errorMap'
 import type { ConnectionsRepository } from '../stores/ConnectionsRepository'
+import type { CloudflaredTunnelService } from '../services/CloudflaredTunnelService'
 import type { ConnectionService } from '../services/ConnectionService'
 import type { DatabaseService } from '../services/DatabaseService'
 import type { IndexService } from '../services/IndexService'
@@ -50,6 +55,7 @@ export type Services = {
   users: UserService
   indexes: IndexService
   updater: UpdaterService
+  cloudflared: CloudflaredTunnelService
 }
 
 function withResult<P, R>(
@@ -66,9 +72,7 @@ function withResult<P, R>(
     try {
       return ok(await fn(parsed.data))
     } catch (error) {
-      const mapped = mapError(error)
-      log.warn(`IPC handler failed`, mapped)
-      return err(mapped.code, mapped.message, mapped.details)
+      return failure(error)
     }
   }
 }
@@ -78,15 +82,31 @@ function withoutInput<R>(fn: () => Promise<R>): (event: IpcMainInvokeEvent) => P
     try {
       return ok(await fn())
     } catch (error) {
-      const mapped = mapError(error)
-      log.warn(`IPC handler failed`, mapped)
-      return err(mapped.code, mapped.message, mapped.details)
+      return failure(error)
     }
   }
 }
 
+function failure(error: unknown): Result<never> {
+  const mapped = mapError(error)
+  // A cancel is the user's own action, not a failure.
+  if (mapped.code !== 'cancelled') log.warn(`IPC handler failed`, mapped)
+  return err(mapped.code, mapped.message, mapped.details)
+}
+
+/** Native file picker, parented to the focused window when there is one. */
+async function pickFile(options: Electron.OpenDialogOptions): Promise<string | null> {
+  const parent = BrowserWindow.getFocusedWindow()
+  const result =
+    parent === null
+      ? await dialog.showOpenDialog(options)
+      : await dialog.showOpenDialog(parent, options)
+  if (result.canceled) return null
+  return result.filePaths[0] ?? null
+}
+
 export function registerIpcHandlers(services: Services): void {
-  const { repo, connections, databases, queries, users, indexes, updater } = services
+  const { repo, connections, databases, queries, users, indexes, updater, cloudflared } = services
 
   ipcMain.handle(
     Channels.ConnectionsList,
@@ -167,6 +187,13 @@ export function registerIpcHandlers(services: Services): void {
   )
 
   ipcMain.handle(
+    Channels.CollectionsSchema,
+    withResult(CollectionRefSchema, ({ connectionId, db, coll }) =>
+      databases.collectionSchema(connectionId, db, coll)
+    )
+  )
+
+  ipcMain.handle(
     Channels.CollectionsCreate,
     withResult(CreateCollectionSchema, ({ connectionId, db, name }) =>
       databases.createCollection(connectionId, db, name)
@@ -233,9 +260,32 @@ export function registerIpcHandlers(services: Services): void {
   )
 
   ipcMain.handle(
+    Channels.QueryDistinct,
+    withResult(DistinctRequestSchema, (request) => queries.distinct(request))
+  )
+
+  // Ids of runs that already settled are ignored.
+  ipcMain.handle(
+    Channels.QueryCancel,
+    withResult(CancelQuerySchema, async ({ requestId }) => queries.cancel(requestId))
+  )
+
+  ipcMain.handle(
+    Channels.QueryWrite,
+    withResult(WriteRequestSchema, (request) => queries.write(request))
+  )
+
+  ipcMain.handle(
     Channels.IndexesList,
     withResult(IndexesListSchema, ({ connectionId, db, coll }) =>
       indexes.listIndexes(connectionId, db, coll)
+    )
+  )
+
+  ipcMain.handle(
+    Channels.IndexesStats,
+    withResult(CollectionRefSchema, ({ connectionId, db, coll }) =>
+      indexes.indexStats(connectionId, db, coll)
     )
   )
 
@@ -280,6 +330,16 @@ export function registerIpcHandlers(services: Services): void {
   )
 
   ipcMain.handle(
+    Channels.RolesList,
+    withResult(DatabaseRefSchema, ({ connectionId, db }) => users.listRoles(connectionId, db))
+  )
+
+  ipcMain.handle(
+    Channels.CloudflaredVersion,
+    withResult(CloudflaredVersionSchema, ({ binaryPath }) => cloudflared.version(binaryPath))
+  )
+
+  ipcMain.handle(
     Channels.UpdaterCheck,
     withoutInput(() => updater.check())
   )
@@ -302,20 +362,26 @@ export function registerIpcHandlers(services: Services): void {
   // main at connect time and never leaves it.
   ipcMain.handle(
     Channels.DialogPickPrivateKey,
-    withoutInput(async () => {
-      const options: Electron.OpenDialogOptions = {
+    withoutInput(() =>
+      pickFile({
         title: 'Select an SSH private key',
         defaultPath: join(homedir(), '.ssh'),
         // Key files carry no extension, and .ssh is a hidden directory.
         properties: ['openFile', 'showHiddenFiles', 'dontAddToRecent']
-      }
-      const parent = BrowserWindow.getFocusedWindow()
-      const result =
-        parent === null
-          ? await dialog.showOpenDialog(options)
-          : await dialog.showOpenDialog(parent, options)
-      if (result.canceled) return null
-      return result.filePaths[0] ?? null
-    })
+      })
+    )
+  )
+
+  ipcMain.handle(
+    Channels.DialogPickCloudflared,
+    withoutInput(() =>
+      pickFile({
+        title: 'Select the cloudflared executable',
+        properties: ['openFile', 'dontAddToRecent'],
+        ...(process.platform === 'win32'
+          ? { filters: [{ name: 'Executables', extensions: ['exe'] }] }
+          : {})
+      })
+    )
   )
 }

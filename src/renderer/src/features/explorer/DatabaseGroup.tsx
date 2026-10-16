@@ -12,7 +12,7 @@ import {
   Users
 } from 'lucide-react'
 import { api, ApiError } from '@/lib/api'
-import { queryKeys } from '@/lib/queryClient'
+import { queryKeys, removeNamespaceQueries } from '@/lib/queryClient'
 import { useExplorerStore } from '@/store/explorer'
 import { useTabsStore } from '@/store/tabs'
 import { Button } from '@/components/ui/button'
@@ -83,6 +83,7 @@ function DatabaseRow({ connectionId, db }: { connectionId: string; db: DatabaseI
     mutationFn: () => api.databases.drop({ connectionId, db: db.name }),
     onSuccess: () => {
       closeForDatabase(connectionId, db.name)
+      removeNamespaceQueries(queryClient, connectionId, db.name)
       void queryClient.invalidateQueries({ queryKey: queryKeys.databases(connectionId) })
       toast.success(`Dropped ${db.name}`)
       setDialog(null)

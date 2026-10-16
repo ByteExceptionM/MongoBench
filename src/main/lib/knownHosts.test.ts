@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { fingerprint, findHostKeys, keyMatches, parseKnownHosts } from './knownHosts'
+import {
+  fingerprint,
+  findHostKeys,
+  isRevoked,
+  keyMatches,
+  keyTypeOf,
+  orderHostKeyAlgorithms,
+  parseKnownHosts
+} from './knownHosts'
 
 // Real ed25519 key plus the two hashed lines OpenSSH itself produced for it
 // via `ssh-keygen -H`, so the HMAC matching is checked against the reference
@@ -15,20 +23,51 @@ const OTHER_KEY = Buffer.from(
   'base64'
 )
 
+const RSA_KEY = Buffer.from(
+  'AAAAB3NzaC1yc2EAAAADAQABAAAAgQC/gX/7WgOQ6kBJXm40rYn/ObaTIBNCWsuJI/6S/wSImH72Nfe2K50W7fBtgBtvhfhY9b56Mfhzh/jXNBdjJtKXjfjRPS2004BGz2jsaLdKeviBryT/jbo4tEX4SA/+NDKlIUwXb5TgSzN+7yTNcCNTdC0zsU77JVcOEgxyu5jYiQ==',
+  'base64'
+)
+const ECDSA_KEY = Buffer.from(
+  'AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBCXAVIxb/s+tZzJwt47GTXuciOdpToANn3jirNMDAYBn0pFQlw0DJ0dTMFgTO8GN36IeBxjU159s/yYS5CmVk7g=',
+  'base64'
+)
+
+/** ssh2's own default order on a runtime with ed25519 support. */
+const SSH2_DEFAULTS = [
+  'ssh-ed25519',
+  'ecdsa-sha2-nistp256',
+  'ecdsa-sha2-nistp384',
+  'ecdsa-sha2-nistp521',
+  'rsa-sha2-512',
+  'rsa-sha2-256',
+  'ssh-rsa'
+] as const
+
 describe('parseKnownHosts', () => {
-  it('skips comments, blank lines and marker lines', () => {
+  it('skips comments, blank lines and @cert-authority lines', () => {
     const entries = parseKnownHosts(
       [
         '# a comment',
         '',
         '   ',
         `@cert-authority *.example.com ssh-ed25519 ${KEY_BASE64}`,
-        `@revoked gate.example.com ssh-ed25519 ${KEY_BASE64}`,
         `gate.example.com ssh-ed25519 ${KEY_BASE64}`
       ].join('\n')
     )
     expect(entries).toHaveLength(1)
     expect(entries[0]?.keyType).toBe('ssh-ed25519')
+    expect(entries[0]?.revoked).toBe(false)
+  })
+
+  it('keeps an @revoked line as a revoked entry', () => {
+    const entries = parseKnownHosts(`@revoked * ssh-ed25519 ${KEY_BASE64}`)
+    expect(entries).toHaveLength(1)
+    expect(entries[0]?.revoked).toBe(true)
+    expect(entries[0]?.key).toEqual(KEY)
+  })
+
+  it('skips lines with an unknown marker', () => {
+    expect(parseKnownHosts(`@unknown gate.example.com ssh-ed25519 ${KEY_BASE64}`)).toEqual([])
   })
 
   it('reads several patterns off one line', () => {
@@ -105,6 +144,96 @@ describe('findHostKeys', () => {
       ].join('\n')
     )
     expect(findHostKeys(entries, 'gate.example.com', 22)).toHaveLength(2)
+  })
+
+  it('never returns a revoked key', () => {
+    const entries = parseKnownHosts(
+      [
+        `@revoked gate.example.com ssh-ed25519 ${KEY_BASE64}`,
+        `gate.example.com ssh-ed25519 ${OTHER_KEY.toString('base64')}`
+      ].join('\n')
+    )
+    expect(findHostKeys(entries, 'gate.example.com', 22)).toEqual([OTHER_KEY])
+  })
+})
+
+describe('isRevoked', () => {
+  it('applies a wildcard revocation to any host presenting that key', () => {
+    const entries = parseKnownHosts(`@revoked * ssh-ed25519 ${KEY_BASE64}`)
+    expect(isRevoked(entries, 'gate.example.com', 22, KEY)).toBe(true)
+    expect(isRevoked(entries, 'other.example.org', 2222, KEY)).toBe(true)
+  })
+
+  it('does not apply to a different key', () => {
+    const entries = parseKnownHosts(`@revoked * ssh-ed25519 ${KEY_BASE64}`)
+    expect(isRevoked(entries, 'gate.example.com', 22, OTHER_KEY)).toBe(false)
+  })
+
+  it('only applies to hosts its patterns match', () => {
+    const entries = parseKnownHosts(`@revoked gate.example.com ssh-ed25519 ${KEY_BASE64}`)
+    expect(isRevoked(entries, 'gate.example.com', 22, KEY)).toBe(true)
+    expect(isRevoked(entries, 'other.example.com', 22, KEY)).toBe(false)
+  })
+
+  it('ignores plain entries carrying the same key', () => {
+    const entries = parseKnownHosts(`gate.example.com ssh-ed25519 ${KEY_BASE64}`)
+    expect(isRevoked(entries, 'gate.example.com', 22, KEY)).toBe(false)
+  })
+})
+
+describe('keyTypeOf', () => {
+  it('reads the type name of an ed25519 blob', () => {
+    expect(keyTypeOf(KEY)).toBe('ssh-ed25519')
+  })
+
+  it('reads the type name of an RSA blob', () => {
+    expect(keyTypeOf(RSA_KEY)).toBe('ssh-rsa')
+  })
+
+  it('reads the type name of an ECDSA blob', () => {
+    expect(keyTypeOf(ECDSA_KEY)).toBe('ecdsa-sha2-nistp256')
+  })
+
+  it('returns null for a blob cut off inside the type name', () => {
+    expect(keyTypeOf(KEY.subarray(0, 8))).toBeNull()
+  })
+
+  it('returns null for a blob too short to hold a length', () => {
+    expect(keyTypeOf(Buffer.from([0, 0]))).toBeNull()
+  })
+})
+
+describe('orderHostKeyAlgorithms', () => {
+  it('puts every RSA signature algorithm first for a known ssh-rsa key', () => {
+    expect(orderHostKeyAlgorithms(['ssh-rsa'], SSH2_DEFAULTS)).toEqual([
+      'rsa-sha2-512',
+      'rsa-sha2-256',
+      'ssh-rsa',
+      'ssh-ed25519',
+      'ecdsa-sha2-nistp256',
+      'ecdsa-sha2-nistp384',
+      'ecdsa-sha2-nistp521'
+    ])
+  })
+
+  it('keeps the default order among several known types', () => {
+    expect(orderHostKeyAlgorithms(['ssh-rsa', 'ecdsa-sha2-nistp384'], SSH2_DEFAULTS)).toEqual([
+      'ecdsa-sha2-nistp384',
+      'rsa-sha2-512',
+      'rsa-sha2-256',
+      'ssh-rsa',
+      'ssh-ed25519',
+      'ecdsa-sha2-nistp256',
+      'ecdsa-sha2-nistp521'
+    ])
+  })
+
+  it('keeps the defaults when no type is known', () => {
+    expect(orderHostKeyAlgorithms([], SSH2_DEFAULTS)).toEqual([...SSH2_DEFAULTS])
+  })
+
+  it('ignores known types the defaults do not offer', () => {
+    expect(orderHostKeyAlgorithms(['ssh-dss'], SSH2_DEFAULTS)).toEqual([...SSH2_DEFAULTS])
   })
 })
 

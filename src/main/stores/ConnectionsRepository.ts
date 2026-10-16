@@ -2,11 +2,15 @@ import { app } from 'electron'
 import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { canReuseServiceTokenSecret } from '@shared/cloudflared'
 import type {
+  CloudflaredTunnelInput,
+  CloudflaredTunnelView,
   ConnectionConfig,
   ConnectionInput,
   SshTunnelInput,
   SshTunnelView,
+  StoredCloudflaredTunnel,
   StoredConnection,
   StoredSshTunnel
 } from '@shared/types'
@@ -116,6 +120,12 @@ export class ConnectionsRepository {
     }
   }
 
+  /** The Cloudflare service token secret in cleartext. Empty when the connection has none. */
+  decryptCloudflared(stored: StoredConnection): { serviceTokenSecret?: string } {
+    const encrypted = stored.cloudflared?.encryptedServiceTokenSecret
+    return encrypted !== undefined ? { serviceTokenSecret: this.secrets.decrypt(encrypted) } : {}
+  }
+
   private fromInput(input: ConnectionInput, existing?: StoredConnection): StoredConnection {
     const now = new Date().toISOString()
     const canonical = canonicalize({
@@ -127,6 +137,7 @@ export class ConnectionsRepository {
     })
 
     const ssh = this.sshFromInput(input.ssh, existing?.ssh)
+    const cloudflared = this.cloudflaredFromInput(input.cloudflared, existing?.cloudflared)
     let encryptedPassword: string | undefined = existing?.encryptedPassword
     let storageUri = canonical.storageUri
 
@@ -157,6 +168,7 @@ export class ConnectionsRepository {
         : {}),
       ...(input.appName !== undefined ? { appName: input.appName } : {}),
       ...(ssh !== undefined ? { ssh } : {}),
+      ...(cloudflared !== undefined ? { cloudflared } : {}),
       ...(input.directConnection !== undefined ? { directConnection: input.directConnection } : {}),
       ...(input.replicaSet !== undefined ? { replicaSet: input.replicaSet } : {}),
       ...(input.readPreference !== undefined ? { readPreference: input.readPreference } : {}),
@@ -217,6 +229,37 @@ export class ConnectionsRepository {
     }
   }
 
+  private cloudflaredFromInput(
+    input: CloudflaredTunnelInput | undefined,
+    existing: StoredCloudflaredTunnel | undefined
+  ): StoredCloudflaredTunnel | undefined {
+    if (input === undefined) return undefined
+
+    const usesSecret = input.authMethod === 'serviceToken'
+    // Blank keeps the saved secret only while a service token still targets the hostname and client ID it was saved for.
+    const carriedSecret =
+      usesSecret && canReuseServiceTokenSecret(existing, input)
+        ? existing?.encryptedServiceTokenSecret
+        : undefined
+    const encryptedServiceTokenSecret =
+      usesSecret && input.serviceTokenSecret !== undefined && input.serviceTokenSecret.length > 0
+        ? this.secrets.encrypt(input.serviceTokenSecret)
+        : carriedSecret
+
+    return {
+      enabled: input.enabled,
+      hostname: input.hostname,
+      authMethod: input.authMethod,
+      ...(input.serviceTokenId !== undefined && input.serviceTokenId.length > 0
+        ? { serviceTokenId: input.serviceTokenId }
+        : {}),
+      ...(encryptedServiceTokenSecret !== undefined ? { encryptedServiceTokenSecret } : {}),
+      ...(input.binaryPath !== undefined && input.binaryPath.length > 0
+        ? { binaryPath: input.binaryPath }
+        : {})
+    }
+  }
+
   private async load(): Promise<StoredConnection[]> {
     if (this.cache !== null) return [...this.cache]
     try {
@@ -248,18 +291,19 @@ export class ConnectionsRepository {
  * renderer never sees either the placeholder token or any cleartext.
  * The username remains available as its own field; the renderer can
  * reconstruct a display string from `{uri, username, hasStoredPassword}`.
- * The SSH secrets go the same way, down to `hasStored…` flags.
+ * The tunnel secrets go the same way, down to `hasStored…` flags.
  *
  * THIS IS THE ONLY PLACE THIS PROJECTION SHOULD HAPPEN.
  */
 export function toRendererView(stored: StoredConnection): ConnectionConfig {
-  const { encryptedPassword, ssh, ...rest } = stored
+  const { encryptedPassword, ssh, cloudflared, ...rest } = stored
   const parts = parseUri(stored.uri)
   const bareUri = `${parts.schemeWithSep}${parts.hostAndRest}`
   return {
     ...rest,
     uri: bareUri,
     ...(ssh !== undefined ? { ssh: toSshView(ssh) } : {}),
+    ...(cloudflared !== undefined ? { cloudflared: toCloudflaredView(cloudflared) } : {}),
     hasStoredPassword: encryptedPassword !== undefined
   }
 }
@@ -271,4 +315,9 @@ function toSshView(ssh: StoredSshTunnel): SshTunnelView {
     hasStoredPassword: encryptedPassword !== undefined,
     hasStoredPassphrase: encryptedPassphrase !== undefined
   }
+}
+
+function toCloudflaredView(cloudflared: StoredCloudflaredTunnel): CloudflaredTunnelView {
+  const { encryptedServiceTokenSecret, ...rest } = cloudflared
+  return { ...rest, hasStoredServiceTokenSecret: encryptedServiceTokenSecret !== undefined }
 }

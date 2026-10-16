@@ -13,7 +13,8 @@ import {
   ContextMenuSubTrigger,
   ContextMenuTrigger
 } from '@/components/ui/context-menu'
-import { queryKeys } from '@/lib/queryClient'
+import { invalidateWrittenCollection, queryKeys } from '@/lib/queryClient'
+import type { RowAccess } from '@/lib/queryRun'
 import { useTabsStore } from '@/store/tabs'
 import {
   AlertDialog,
@@ -30,6 +31,7 @@ import { api, ApiError } from '@/lib/api'
 import { extractColumns, inspectBson, kindBadgeClass, kindLabel } from '@/lib/bsonDisplay'
 import { cn } from '@/lib/utils'
 import type { DocumentEnvelope, UuidEncoding } from '@shared/types'
+import { Notice } from './ResultStates'
 
 const MAX_CELL_CHARS = 80
 const COL_MIN_WIDTH = 72
@@ -47,23 +49,31 @@ type RowMenuState = {
   envelope: DocumentEnvelope | null
 }
 
+/** A row with an `_id`, so it can address its stored document. */
+type StoredEnvelope = DocumentEnvelope & { id: string }
+
+const hasId = (doc: DocumentEnvelope): doc is StoredEnvelope => doc.id !== null
+
 type PendingDelete =
-  { kind: 'one'; envelope: DocumentEnvelope } | { kind: 'many'; ids: string[] } | null
+  { kind: 'one'; envelope: StoredEnvelope } | { kind: 'many'; ids: string[] } | null
 
 export function DocumentTable({
   documents,
-  loading,
   connectionId,
   db,
   coll,
+  rowAccess,
+  emptyMessage,
   uuidEncoding,
   timezone
 }: {
   documents: DocumentEnvelope[]
-  loading: boolean
   connectionId: string
   db: string
+  /** Collection the rows belong to; every write targets it. */
   coll: string
+  rowAccess: RowAccess
+  emptyMessage: string
   uuidEncoding: UuidEncoding
   timezone: string
 }) {
@@ -71,11 +81,12 @@ export function DocumentTable({
   const [editorState, setEditorState] = useState<RowMenuState>({ mode: null, envelope: null })
   const [pendingDelete, setPendingDelete] = useState<PendingDelete>(null)
   const [selected, setSelected] = useState<Set<string>>(() => new Set())
-  const [activeLookup, setActiveLookup] = useState<{ docId: string; ref: ExtractedRef } | null>(
+  const [activeLookup, setActiveLookup] = useState<{ rowKey: string; ref: ExtractedRef } | null>(
     null
   )
   const lastClickedIdRef = useRef<string | null>(null)
-  const openTab = useTabsStore((s) => s.open)
+  const openWithFilter = useTabsStore((s) => s.openWithFilter)
+  const rowsWritable = rowAccess !== 'none'
 
   // Prefetched in the background as soon as the table mounts so the
   // ObjectId-lookup submenu (right-click on an ObjectId cell) doesn't have to
@@ -89,12 +100,6 @@ export function DocumentTable({
 
   /** User-set widths; auto-estimated widths fill in for the rest. */
   const [userColumnWidths, setUserColumnWidths] = useState<Record<string, number>>({})
-
-  // Reset manual widths when the *coll* changes — different schema means
-  // different "natural" widths. Filter/sort within the same coll keeps them.
-  useEffect(() => {
-    setUserColumnWidths({})
-  }, [connectionId, db, coll])
 
   const autoColumnWidths = useMemo(() => {
     const widths: Record<string, number> = {}
@@ -144,7 +149,7 @@ export function DocumentTable({
   // Drop selections that no longer correspond to any visible document
   // (e.g. after a query change or pagination).
   useEffect(() => {
-    const visible = new Set(documents.map((d) => d.id))
+    const visible = new Set(rowsWritable ? documents.map((d) => d.id) : [])
     setSelected((prev) => {
       let changed = false
       const next = new Set<string>()
@@ -154,10 +159,10 @@ export function DocumentTable({
       }
       return changed ? next : prev
     })
-  }, [documents])
+  }, [documents, rowsWritable])
 
   const deleteOneMutation = useMutation({
-    mutationFn: (env: DocumentEnvelope) =>
+    mutationFn: (env: StoredEnvelope) =>
       api.query.deleteOne({
         connectionId,
         db,
@@ -168,8 +173,7 @@ export function DocumentTable({
     onSuccess: (result) => {
       if (result.deletedCount > 0) {
         toast.success('Document deleted')
-        void queryClient.invalidateQueries({ queryKey: ['find'] })
-        void queryClient.invalidateQueries({ queryKey: ['count'] })
+        void invalidateWrittenCollection(queryClient, { connectionId, db, coll })
       } else {
         toast.warning('Document was already gone')
       }
@@ -188,8 +192,7 @@ export function DocumentTable({
       toast.success(
         `Deleted ${result.deletedCount} document${result.deletedCount === 1 ? '' : 's'}`
       )
-      void queryClient.invalidateQueries({ queryKey: ['find'] })
-      void queryClient.invalidateQueries({ queryKey: ['count'] })
+      void invalidateWrittenCollection(queryClient, { connectionId, db, coll })
       setSelected(new Set())
       setPendingDelete(null)
     },
@@ -211,6 +214,24 @@ export function DocumentTable({
     } catch {
       toast.error('Clipboard write blocked')
     }
+  }
+
+  // Partial rows can't be written back and their hash never matches; act on the stored document.
+  const withStoredDocument = (doc: StoredEnvelope, act: (stored: StoredEnvelope) => void) => {
+    if (rowAccess === 'full') {
+      act(doc)
+      return
+    }
+    void api.query
+      .find({ connectionId, db, coll, filter: `{"_id":${doc.id}}`, skip: 0, limit: 1 })
+      .then(({ documents: [stored] }) => {
+        if (stored && hasId(stored)) act(stored)
+        else toast.error('Document not found')
+      })
+      .catch((e: unknown) => {
+        const message = e instanceof ApiError ? e.message : String(e)
+        toast.error(`Loading the document failed: ${message}`)
+      })
   }
 
   /**
@@ -243,7 +264,8 @@ export function DocumentTable({
     setSelected((prev) => {
       const next = new Set(prev)
       for (let i = lo; i <= hi; i++) {
-        const docId = indices[i]!
+        const docId = indices[i]
+        if (!docId) continue
         if (targetSelected) next.add(docId)
         else next.delete(docId)
       }
@@ -293,17 +315,19 @@ export function DocumentTable({
     // No modifier: leave selection alone (user is just reading a cell).
   }
 
-  const allVisibleSelected = documents.length > 0 && documents.every((d) => selected.has(d.id))
-  const someVisibleSelected = !allVisibleSelected && documents.some((d) => selected.has(d.id))
+  const selectableIds = rowsWritable ? documents.filter(hasId).map((d) => d.id) : []
+  const allVisibleSelected =
+    selectableIds.length > 0 && selectableIds.every((id) => selected.has(id))
+  const someVisibleSelected = !allVisibleSelected && selectableIds.some((id) => selected.has(id))
   const toggleSelectAllVisible = () => {
     setSelected((prev) => {
       if (allVisibleSelected) {
         const next = new Set(prev)
-        for (const d of documents) next.delete(d.id)
+        for (const id of selectableIds) next.delete(id)
         return next
       }
       const next = new Set(prev)
-      for (const d of documents) next.add(d.id)
+      for (const id of selectableIds) next.add(id)
       return next
     })
     lastClickedIdRef.current = null
@@ -314,27 +338,14 @@ export function DocumentTable({
     lastClickedIdRef.current = null
   }
 
-  if (documents.length === 0) {
-    return (
-      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-        {loading ? (
-          <span className="flex items-center gap-2">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Loading…
-          </span>
-        ) : (
-          'No documents match the current filter.'
-        )}
-      </div>
-    )
-  }
+  if (documents.length === 0) return <Notice>{emptyMessage}</Notice>
 
   const selectionCount = selected.size
 
   return (
     <>
       <div className="flex h-full flex-col">
-        {selectionCount > 0 && (
+        {rowsWritable && selectionCount > 0 && (
           <SelectionBar
             count={selectionCount}
             onClear={clearSelection}
@@ -348,21 +359,25 @@ export function DocumentTable({
             style={{ tableLayout: 'fixed' }}
           >
             <colgroup>
-              <col style={{ width: CHECKBOX_COL_WIDTH }} />
+              {rowsWritable && <col style={{ width: CHECKBOX_COL_WIDTH }} />}
               {columns.map((col) => (
                 <col key={col} style={{ width: getColWidth(col) }} />
               ))}
             </colgroup>
             <thead className="sticky top-0 z-10 bg-card/80 backdrop-blur">
               <tr>
-                <th className="border-b border-r border-border/60 px-2 py-2 text-center">
-                  <Checkbox
-                    checked={allVisibleSelected}
-                    indeterminate={someVisibleSelected}
-                    onClick={() => toggleSelectAllVisible()}
-                    aria-label={allVisibleSelected ? 'Deselect all visible' : 'Select all visible'}
-                  />
-                </th>
+                {rowsWritable && (
+                  <th className="border-b border-r border-border/60 px-2 py-2 text-center">
+                    <Checkbox
+                      checked={allVisibleSelected}
+                      indeterminate={someVisibleSelected}
+                      onClick={() => toggleSelectAllVisible()}
+                      aria-label={
+                        allVisibleSelected ? 'Deselect all visible' : 'Select all visible'
+                      }
+                    />
+                  </th>
+                )}
                 {columns.map((col) => (
                   <th
                     key={col}
@@ -393,19 +408,22 @@ export function DocumentTable({
               </tr>
             </thead>
             <tbody>
-              {documents.map((doc) => {
-                const isSelected = selected.has(doc.id)
-                const lookupRef = activeLookup?.docId === doc.id ? activeLookup.ref : null
+              {documents.map((doc, index) => {
+                // Derived rows may repeat an _id or have none, so the index keeps keys unique.
+                const rowKey = `${index}:${doc.id ?? ''}`
+                const stored = rowsWritable && hasId(doc) ? doc : null
+                const isSelected = stored !== null && selected.has(stored.id)
+                const lookupRef = activeLookup?.rowKey === rowKey ? activeLookup.ref : null
                 return (
                   <ContextMenu
-                    key={doc.id}
+                    key={rowKey}
                     onOpenChange={(open) => {
-                      if (!open && activeLookup?.docId === doc.id) setActiveLookup(null)
+                      if (!open && activeLookup?.rowKey === rowKey) setActiveLookup(null)
                     }}
                   >
                     <ContextMenuTrigger asChild>
                       <tr
-                        onClick={(e) => handleRowClick(doc.id, e)}
+                        onClick={stored ? (e) => handleRowClick(stored.id, e) : undefined}
                         onMouseDown={(e) => {
                           // Prevent native text-selection range expansion when the
                           // user shift-clicks across rows.
@@ -416,17 +434,21 @@ export function DocumentTable({
                           isSelected ? 'bg-primary/10 hover:bg-primary/15' : 'hover:bg-accent/30'
                         )}
                       >
-                        <td
-                          className="w-9 border-b border-r border-border/30 px-2 py-1.5 text-center align-middle"
-                          onClick={(e) => e.stopPropagation()}
-                          onContextMenu={(e) => e.stopPropagation()}
-                        >
-                          <Checkbox
-                            checked={isSelected}
-                            onClick={(e) => handleRowCheckboxClick(doc.id, e)}
-                            aria-label={isSelected ? 'Deselect document' : 'Select document'}
-                          />
-                        </td>
+                        {rowsWritable && (
+                          <td
+                            className="w-9 border-b border-r border-border/30 px-2 py-1.5 text-center align-middle"
+                            onClick={(e) => e.stopPropagation()}
+                            onContextMenu={(e) => e.stopPropagation()}
+                          >
+                            {stored && (
+                              <Checkbox
+                                checked={isSelected}
+                                onClick={(e) => handleRowCheckboxClick(stored.id, e)}
+                                aria-label={isSelected ? 'Deselect document' : 'Select document'}
+                              />
+                            )}
+                          </td>
+                        )}
                         {columns.map((col) => (
                           <Cell
                             key={col}
@@ -435,8 +457,10 @@ export function DocumentTable({
                             uuidEncoding={uuidEncoding}
                             timezone={timezone}
                             onContextMenu={() => {
-                              const ref = col === '_id' ? null : extractRef(doc.data[col])
-                              if (ref) setActiveLookup({ docId: doc.id, ref })
+                              // A stored document's own _id only points back at itself.
+                              const ref =
+                                col === '_id' && rowsWritable ? null : extractRef(doc.data[col])
+                              if (ref) setActiveLookup({ rowKey, ref })
                               else setActiveLookup(null)
                             }}
                           />
@@ -448,12 +472,10 @@ export function DocumentTable({
                         <>
                           <ContextMenuItem
                             onSelect={() =>
-                              openTab({
-                                connectionId,
-                                db: lookupRef.db ?? db,
-                                coll: lookupRef.ref,
-                                filter: `{ _id: ObjectId("${lookupRef.oid}") }`
-                              })
+                              openWithFilter(
+                                { connectionId, db: lookupRef.db ?? db, coll: lookupRef.ref },
+                                `{ _id: ObjectId("${lookupRef.oid}") }`
+                              )
                             }
                           >
                             <Link2 className="h-4 w-4" />
@@ -502,12 +524,10 @@ export function DocumentTable({
                                   <ContextMenuItem
                                     key={c.name}
                                     onSelect={() =>
-                                      openTab({
-                                        connectionId,
-                                        db,
-                                        coll: c.name,
-                                        filter: `{ _id: ObjectId("${lookupRef.oid}") }`
-                                      })
+                                      openWithFilter(
+                                        { connectionId, db, coll: c.name },
+                                        `{ _id: ObjectId("${lookupRef.oid}") }`
+                                      )
                                     }
                                   >
                                     <span className="truncate font-mono text-xs">{c.name}</span>
@@ -525,31 +545,51 @@ export function DocumentTable({
                         <Eye className="h-4 w-4" />
                         View
                       </ContextMenuItem>
-                      <ContextMenuItem
-                        onSelect={() => setEditorState({ mode: 'edit', envelope: doc })}
-                      >
-                        <Pencil className="h-4 w-4" />
-                        Edit
-                      </ContextMenuItem>
-                      <ContextMenuItem
-                        onSelect={() => setEditorState({ mode: 'duplicate', envelope: doc })}
-                      >
-                        <FilePlus2 className="h-4 w-4" />
-                        Duplicate
-                      </ContextMenuItem>
+                      {stored && (
+                        <>
+                          <ContextMenuItem
+                            onSelect={() =>
+                              withStoredDocument(stored, (envelope) =>
+                                setEditorState({ mode: 'edit', envelope })
+                              )
+                            }
+                          >
+                            <Pencil className="h-4 w-4" />
+                            Edit
+                          </ContextMenuItem>
+                          <ContextMenuItem
+                            onSelect={() =>
+                              withStoredDocument(stored, (envelope) =>
+                                setEditorState({ mode: 'duplicate', envelope })
+                              )
+                            }
+                          >
+                            <FilePlus2 className="h-4 w-4" />
+                            Duplicate
+                          </ContextMenuItem>
+                        </>
+                      )}
                       <ContextMenuSeparator />
                       <ContextMenuItem onSelect={() => void onCopy(doc)}>
                         <Copy className="h-4 w-4" />
                         Copy
                       </ContextMenuItem>
-                      <ContextMenuSeparator />
-                      <ContextMenuItem
-                        className="text-destructive focus:bg-destructive/10 focus:text-destructive"
-                        onSelect={() => setPendingDelete({ kind: 'one', envelope: doc })}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                        Delete
-                      </ContextMenuItem>
+                      {stored && (
+                        <>
+                          <ContextMenuSeparator />
+                          <ContextMenuItem
+                            className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                            onSelect={() =>
+                              withStoredDocument(stored, (envelope) =>
+                                setPendingDelete({ kind: 'one', envelope })
+                              )
+                            }
+                          >
+                            <Trash2 className="h-4 w-4" />
+                            Delete
+                          </ContextMenuItem>
+                        </>
+                      )}
                     </ContextMenuContent>
                   </ContextMenu>
                 )

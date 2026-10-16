@@ -17,9 +17,8 @@ import {
 import { ConnectionFormDialog } from '@/features/connections/ConnectionFormDialog'
 import { ConnectionGroup, type DragHandlers } from './ConnectionGroup'
 import { api, ApiError } from '@/lib/api'
-import { queryKeys } from '@/lib/queryClient'
-import { useAppStore } from '@/store'
-import { useTabsStore } from '@/store/tabs'
+import { queryKeys, releaseConnection } from '@/lib/queryClient'
+import { reorderIds } from '@/lib/reorder'
 import type { ConnectionConfig } from '@shared/types'
 
 export function ConnectionsExplorer() {
@@ -30,8 +29,6 @@ export function ConnectionsExplorer() {
   const [dragOverIdx, setDragOverIdx] = useState<{ id: string; pos: 'before' | 'after' } | null>(
     null
   )
-  const markDisconnected = useAppStore((s) => s.markDisconnected)
-  const closeTabsForConnection = useTabsStore((s) => s.closeForConnection)
   const queryClient = useQueryClient()
 
   const {
@@ -46,8 +43,7 @@ export function ConnectionsExplorer() {
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api.connections.delete(id),
     onSuccess: (_, id) => {
-      markDisconnected(id)
-      closeTabsForConnection(id)
+      releaseConnection(queryClient, id)
       void queryClient.invalidateQueries({ queryKey: queryKeys.connections })
       toast.success(`${pendingDelete?.name ?? 'Connection'} deleted`)
       setPendingDelete(null)
@@ -104,19 +100,13 @@ export function ConnectionsExplorer() {
     onDrop: (e) => {
       e.preventDefault()
       if (!dragId || !connections) return
-      const fromIdx = connections.findIndex((c) => c.id === dragId)
-      const overIdx = connections.findIndex((c) => c.id === id)
-      if (fromIdx < 0 || overIdx < 0 || fromIdx === overIdx) {
-        setDragId(null)
-        setDragOverIdx(null)
-        return
-      }
-      const ids = connections.map((c) => c.id)
-      ids.splice(fromIdx, 1)
-      const insertAt =
-        dragOverIdx?.pos === 'after' ? (fromIdx < overIdx ? overIdx : overIdx + 1) : overIdx
-      ids.splice(insertAt, 0, dragId)
-      reorderMutation.mutate(ids)
+      const ids = reorderIds(
+        connections.map((c) => c.id),
+        dragId,
+        id,
+        dragOverIdx?.pos ?? 'before'
+      )
+      if (ids) reorderMutation.mutate(ids)
       setDragId(null)
       setDragOverIdx(null)
     }

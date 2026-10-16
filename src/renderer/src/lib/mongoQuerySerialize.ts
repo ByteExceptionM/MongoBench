@@ -6,12 +6,13 @@
  *
  *   { $oid: "…" }                                    →  ObjectId("…")
  *   { $date: "…" } / { $date: { $numberLong: ms } }  →  ISODate("…")
- *   { $numberLong: "…" } / Int / Decimal / Double    →  NumberLong("…") / NumberInt(…) / NumberDecimal("…") / number
+ *   { $numberLong: "…" } / Int / Decimal             →  NumberLong("…") / NumberInt(…) / NumberDecimal("…")
+ *   { $numberDouble: "…" }                           →  5.0 / 2.5 / -0.0 / 1e+21 / NumberDouble("NaN")
  *   { $uuid: "…" }                                   →  UUID("…")
  *   { $binary: { base64, subType: "04" } }           →  UUID("…")    (decoded)
  *   { $binary: { base64, subType: "03" } } + java    →  JUUID("…")   (decoded with java byte order)
  *   { $binary: { base64, subType: x } }              →  BinData(<int>, "…")
- *   { $regularExpression: { pattern, options } }     →  /pattern/options
+ *   { $regularExpression: { pattern, options } }     →  /pattern/options, or RegExp("…", "…") when no literal reads back
  *   { $timestamp: { t, i } }                         →  Timestamp(t, i)
  *   { $minKey: 1 } / { $maxKey: 1 }                  →  MinKey() / MaxKey()
  *   { $undefined: true }                             →  undefined
@@ -31,20 +32,40 @@ export type SerializeOptions = {
    * the user saves.
    */
   timezone?: string
+  /** Line length within which an object or array stays on one line; needs indent > 0. */
+  printWidth?: number
+  /** Column the value starts at on its first line; counts toward printWidth. */
+  startColumn?: number
 }
 
 export function serializeMongoValue(value: unknown, options: SerializeOptions = {}): string {
   const indent = options.indent ?? 2
+  const uuidEncoding = options.uuidEncoding ?? 'default'
+  const timezone = options.timezone ?? 'UTC'
+  const inline: Ctx = {
+    uuidEncoding,
+    timezone,
+    indentSize: 0,
+    indentStr: '',
+    nl: '',
+    sep: ': ',
+    listSep: ', ',
+    pad: ' ',
+    fit: null
+  }
   const ctx: Ctx = {
-    uuidEncoding: options.uuidEncoding ?? 'default',
-    timezone: options.timezone ?? 'UTC',
+    uuidEncoding,
+    timezone,
     indentSize: indent,
     indentStr: indent > 0 ? ' '.repeat(indent) : '',
     nl: indent > 0 ? '\n' : '',
     sep: indent > 0 ? ': ' : ':',
-    listSep: indent > 0 ? ', ' : ','
+    listSep: indent > 0 ? ', ' : ',',
+    pad: '',
+    fit:
+      indent > 0 && options.printWidth !== undefined ? { width: options.printWidth, inline } : null
   }
-  return write(value, 0, ctx)
+  return write(value, 0, ctx, options.startColumn ?? 0)
 }
 
 type Ctx = {
@@ -55,11 +76,21 @@ type Ctx = {
   nl: string
   sep: string
   listSep: string
+  /** Space inside one-line object braces. */
+  pad: string
+  /** Set when objects and arrays may stay on one line up to `width` columns. */
+  fit: { width: number; inline: Ctx } | null
 }
 
 const IDENT_RE = /^[A-Za-z_$][\w$]*$/
 
-function write(value: unknown, depth: number, ctx: Ctx): string {
+/** Whether `key` is written without quotes, as an identifier. */
+export function isBareKey(key: string): boolean {
+  return IDENT_RE.test(key)
+}
+
+// `prefix` is the width of what precedes the value on its first line after the indentation.
+function write(value: unknown, depth: number, ctx: Ctx, prefix = 0): string {
   if (value === null) return 'null'
   if (value === undefined) return 'undefined'
   if (typeof value === 'boolean') return value ? 'true' : 'false'
@@ -68,20 +99,28 @@ function write(value: unknown, depth: number, ctx: Ctx): string {
     return String(value)
   }
   if (typeof value === 'string') return JSON.stringify(value)
-  if (Array.isArray(value)) return writeArray(value, depth, ctx)
+  if (Array.isArray(value)) return writeArray(value, depth, ctx, prefix)
   if (typeof value === 'object') {
     const helper = matchHelper(value as Record<string, unknown>, ctx)
     if (helper !== null) return helper
-    return writeObject(value as Record<string, unknown>, depth, ctx)
+    return writeObject(value as Record<string, unknown>, depth, ctx, prefix)
   }
   return JSON.stringify(value)
 }
 
-function writeArray(arr: unknown[], depth: number, ctx: Ctx): string {
+function inlineIfFits(value: object, depth: number, ctx: Ctx, prefix: number): string | null {
+  if (ctx.fit === null) return null
+  const flat = write(value, depth, ctx.fit.inline)
+  return depth * ctx.indentSize + prefix + flat.length <= ctx.fit.width ? flat : null
+}
+
+function writeArray(arr: unknown[], depth: number, ctx: Ctx, prefix: number): string {
   if (arr.length === 0) return '[]'
   if (ctx.indentSize === 0) {
     return '[' + arr.map((v) => write(v, depth + 1, ctx)).join(ctx.listSep) + ']'
   }
+  const fitted = inlineIfFits(arr, depth, ctx, prefix)
+  if (fitted !== null) return fitted
   const inner = ctx.indentStr.repeat(depth + 1)
   const closer = ctx.indentStr.repeat(depth)
   return (
@@ -94,15 +133,25 @@ function writeArray(arr: unknown[], depth: number, ctx: Ctx): string {
   )
 }
 
-function writeObject(obj: Record<string, unknown>, depth: number, ctx: Ctx): string {
+function writeObject(
+  obj: Record<string, unknown>,
+  depth: number,
+  ctx: Ctx,
+  prefix: number
+): string {
   const keys = Object.keys(obj)
   if (keys.length === 0) return '{}'
+  const fitted = inlineIfFits(obj, depth, ctx, prefix)
+  if (fitted !== null) return fitted
   const inner = ctx.indentStr.repeat(depth + 1)
   const closer = ctx.indentStr.repeat(depth)
-  const writeKey = (k: string): string => (IDENT_RE.test(k) ? k : JSON.stringify(k))
-  const lines = keys.map((k) => `${inner}${writeKey(k)}${ctx.sep}${write(obj[k], depth + 1, ctx)}`)
+  const writeKey = (k: string): string => (isBareKey(k) ? k : JSON.stringify(k))
+  const lines = keys.map((k) => {
+    const head = writeKey(k) + ctx.sep
+    return `${inner}${head}${write(obj[k], depth + 1, ctx, head.length)}`
+  })
   if (ctx.indentSize === 0) {
-    return '{' + lines.map((l) => l.trimStart()).join(ctx.listSep) + '}'
+    return '{' + ctx.pad + lines.map((l) => l.trimStart()).join(ctx.listSep) + ctx.pad + '}'
   }
   return '{' + ctx.nl + lines.join(',' + ctx.nl) + ctx.nl + closer + '}'
 }
@@ -135,8 +184,11 @@ function matchHelper(obj: Record<string, unknown>, ctx: Ctx): string | null {
   }
   if (keys.length === 1 && typeof obj['$numberDouble'] === 'string') {
     const n = Number(obj['$numberDouble'])
-    if (Number.isFinite(n)) return String(n)
-    return `NumberDouble(${JSON.stringify(obj['$numberDouble'])})`
+    if (!Number.isFinite(n)) return `NumberDouble(${JSON.stringify(String(n))})`
+    if (Object.is(n, -0)) return '-0.0'
+    // Without a dot or exponent the parser reads the literal back as an integer.
+    const text = String(n)
+    return /[.e]/.test(text) ? text : `${text}.0`
   }
 
   if (keys.length === 1 && typeof obj['$uuid'] === 'string') {
@@ -153,8 +205,9 @@ function matchHelper(obj: Record<string, unknown>, ctx: Ctx): string | null {
     typeof (obj['$regularExpression'] as Record<string, unknown>)['pattern'] === 'string'
   ) {
     const r = obj['$regularExpression'] as { pattern: string; options?: string }
-    const escaped = r.pattern.replace(/(^|[^\\])\//g, '$1\\/')
-    return `/${escaped}/${typeof r.options === 'string' ? r.options : ''}`
+    const options = typeof r.options === 'string' ? r.options : ''
+    if (readsBackAsLiteral(r.pattern, options)) return `/${r.pattern}/${options}`
+    return `RegExp(${JSON.stringify(r.pattern)}, ${JSON.stringify(options)})`
   }
 
   if (keys.length === 1 && isPlainRecord(obj['$timestamp'])) {
@@ -200,6 +253,22 @@ function dateToIso(raw: unknown, tz: string): string | null {
     if (Number.isFinite(ms)) return formatIsoInZone(new Date(ms), tz)
   }
   return null
+}
+
+// Mirrors the tokenizer's regex scan; "//" and "/*" would start a comment instead.
+function readsBackAsLiteral(pattern: string, options: string): boolean {
+  if (pattern === '' || pattern.startsWith('*') || !/^[gimsuy]*$/.test(options)) return false
+  if (/[/\n\r\u2028\u2029]/.test(pattern)) return false
+  let inClass = false
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i]
+    if (ch === '\\') {
+      if (i === pattern.length - 1) return false
+      i++
+    } else if (ch === '[') inClass = true
+    else if (ch === ']') inClass = false
+  }
+  return !inClass
 }
 
 function renderBinary(bin: Record<string, unknown>, ctx: Ctx): string {

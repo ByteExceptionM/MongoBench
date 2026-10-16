@@ -19,9 +19,13 @@ export const ErrorCodes = [
   'ssh_connect_failed',
   'ssh_auth_failed',
   'ssh_host_key_mismatch',
+  'cloudflared_not_found',
+  'cloudflared_auth_failed',
+  'cloudflared_failed',
   'driver_error',
   'not_found',
   'conflict',
+  'cancelled',
   'internal'
 ] as const
 

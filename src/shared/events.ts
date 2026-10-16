@@ -21,11 +21,18 @@ export type UpdateProgress = {
 
 /**
  * Pushed on `connections:dropped` when main tears a connection down on its
- * own — today only when its SSH tunnel dies. The renderer has already been
- * told the connection is live, so without this the sidebar would keep
- * claiming so until the next query happened to fail.
+ * own — when its tunnel dies. The renderer has already been told the
+ * connection is live, so without this the sidebar would keep claiming so
+ * until the next query happened to fail.
  */
 export type ConnectionDropped = {
   connectionId: string
   reason: string
 }
+
+/**
+ * Pushed on `cloudflared:login` while cloudflared waits for a browser sign-in
+ * to Cloudflare Access, and once more when that sign-in process ends.
+ */
+export type CloudflaredLoginPrompt =
+  { hostname: string; state: 'waiting'; url: string } | { hostname: string; state: 'finished' }

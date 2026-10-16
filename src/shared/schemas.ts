@@ -1,4 +1,10 @@
 import { z } from 'zod'
+import {
+  cloudflaredTunnelProblems,
+  INVALID_CLOUDFLARED_PATH_MESSAGE,
+  isCloudflaredExecutable
+} from './cloudflared'
+import { MAX_INSERT_DOCUMENTS } from './types'
 
 const AuthMechanismSchema = z.enum(['SCRAM-SHA-256', 'SCRAM-SHA-1', 'DEFAULT'])
 const ReadPreferenceSchema = z.enum([
@@ -10,6 +16,7 @@ const ReadPreferenceSchema = z.enum([
 ])
 const UuidEncodingSchema = z.enum(['default', 'java'])
 const SshAuthMethodSchema = z.enum(['password', 'privateKey', 'agent'])
+const CloudflaredAuthMethodSchema = z.enum(['browser', 'serviceToken'])
 
 /**
  * Fields stay permissive while `enabled` is false so a half-filled tunnel
@@ -45,6 +52,31 @@ export const SshTunnelInputSchema = z
     }
   })
 
+/** Permissive like the SSH tunnel; ConnectionInputSchema checks an enabled one since its rules need the URI. */
+export const CloudflaredTunnelInputSchema = z
+  .object({
+    enabled: z.boolean(),
+    hostname: z.string().trim().max(253),
+    authMethod: CloudflaredAuthMethodSchema,
+    // The token reaches cloudflared as environment variables, which cannot hold a NUL.
+    serviceTokenId: z
+      .string()
+      .trim()
+      .max(255)
+      .refine((v) => !v.includes('\0'), 'Service token client ID must not contain NUL characters')
+      .optional(),
+    serviceTokenSecret: z
+      .string()
+      .max(1024)
+      .refine(
+        (v) => !v.includes('\0'),
+        'Service token client secret must not contain NUL characters'
+      )
+      .optional(),
+    binaryPath: z.string().trim().max(4096).optional()
+  })
+  .strict()
+
 export const ConnectionInputSchema = z
   .object({
     name: z.string().trim().min(1).max(120),
@@ -65,6 +97,7 @@ export const ConnectionInputSchema = z
     serverSelectionTimeoutMS: z.number().int().min(1000).max(60_000).optional(),
     appName: z.string().trim().max(120).optional(),
     ssh: SshTunnelInputSchema.optional(),
+    cloudflared: CloudflaredTunnelInputSchema.optional(),
     directConnection: z.boolean().optional(),
     replicaSet: z.string().trim().max(120).optional(),
     readPreference: ReadPreferenceSchema.optional(),
@@ -79,6 +112,19 @@ export const ConnectionInputSchema = z
     retryReads: z.boolean().optional()
   })
   .strict()
+  .superRefine((input, ctx) => {
+    if (input.cloudflared?.enabled !== true) return
+    if (input.ssh?.enabled === true) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Use either the SSH tunnel or the Cloudflare tunnel, not both',
+        path: ['cloudflared', 'enabled']
+      })
+    }
+    for (const { path, message } of cloudflaredTunnelProblems(input)) {
+      ctx.addIssue({ code: 'custom', message, path })
+    }
+  })
 
 export const ConnectionUpdateSchema = z
   .object({
@@ -100,13 +146,18 @@ export const ReorderConnectionsSchema = z
   .object({ ids: z.array(z.string().uuid()).min(1) })
   .strict()
 
+// Any name a server can hold: only the characters MongoDB rejects on every platform.
 const dbName = z
   .string()
   .min(1)
   .max(64)
-  .refine((v) => !/[\s/\\."$*<>:|?]/.test(v), 'invalid database name')
+  .refine((v) => !/[\0/\\. "$]/.test(v), 'invalid database name')
+// New databases stay portable: Windows servers also reject these.
+const newDbName = dbName.refine((v) => !/[\s*<>:|?]/.test(v), 'invalid database name')
 const collName = z.string().min(1).max(255)
-const ejsonString = z.string().max(64 * 1024)
+// Payloads are bounded by MongoDB itself (16 MiB BSON), not by an arbitrary smaller cap.
+const ejsonString = z.string().max(16 * 1024 * 1024)
+const requestIdSchema = z.string().uuid()
 
 export const DatabaseRefSchema = z
   .object({
@@ -148,7 +199,7 @@ export const CreateCollectionSchema = z
 export const CreateDatabaseSchema = z
   .object({
     connectionId: z.string().uuid(),
-    db: dbName,
+    db: newDbName,
     firstColl: validCollName
   })
   .strict()
@@ -159,6 +210,12 @@ const usernameSchema = z
   .min(1)
   .max(255)
   .refine((v) => !/[\s\0]/.test(v), 'invalid username')
+// Users created elsewhere may carry whitespace; they must still be editable and droppable verbatim.
+const existingUsernameSchema = z
+  .string()
+  .min(1)
+  .max(255)
+  .refine((v) => !v.includes('\0'), 'invalid username')
 
 const RoleSchema = z
   .object({
@@ -166,6 +223,8 @@ const RoleSchema = z
     db: z.string().trim().min(1).max(64)
   })
   .strict()
+// MongoDB has no role-count limit; only the 16 MiB user document bounds it.
+const rolesList = z.array(RoleSchema).max(10_000)
 
 export const CreateUserSchema = z
   .object({
@@ -173,7 +232,7 @@ export const CreateUserSchema = z
     db: dbName,
     username: usernameSchema,
     password: z.string().min(1).max(1024),
-    roles: z.array(RoleSchema).max(64)
+    roles: rolesList
   })
   .strict()
 
@@ -181,9 +240,9 @@ export const UpdateUserSchema = z
   .object({
     connectionId: z.string().uuid(),
     db: dbName,
-    username: usernameSchema,
+    username: existingUsernameSchema,
     password: z.string().min(1).max(1024).nullable(),
-    roles: z.array(RoleSchema).max(64).nullable()
+    roles: rolesList.nullable()
   })
   .strict()
 
@@ -191,7 +250,7 @@ export const DropUserSchema = z
   .object({
     connectionId: z.string().uuid(),
     db: dbName,
-    username: usernameSchema
+    username: existingUsernameSchema
   })
   .strict()
 
@@ -203,9 +262,10 @@ export const FindRequestSchema = z
     filter: ejsonString.optional(),
     projection: ejsonString.optional(),
     sort: ejsonString.optional(),
-    skip: z.number().int().min(0).max(1_000_000),
+    skip: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
     /** Omit / undefined = no limit. */
-    limit: z.number().int().min(1).max(1_000_000).optional()
+    limit: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),
+    requestId: requestIdSchema.optional()
   })
   .strict()
 
@@ -214,7 +274,9 @@ export const CountRequestSchema = z
     connectionId: z.string().uuid(),
     db: dbName,
     coll: collName,
-    filter: ejsonString.optional()
+    filter: ejsonString.optional(),
+    exact: z.boolean().optional(),
+    requestId: requestIdSchema.optional()
   })
   .strict()
 
@@ -223,19 +285,33 @@ export const AggregateRequestSchema = z
     connectionId: z.string().uuid(),
     db: dbName,
     coll: collName,
-    pipeline: z.string().max(256 * 1024)
+    pipeline: ejsonString,
+    requestId: requestIdSchema.optional()
   })
   .strict()
+
+export const DistinctRequestSchema = z
+  .object({
+    connectionId: z.string().uuid(),
+    db: dbName,
+    coll: collName,
+    field: z.string().min(1).max(1024),
+    filter: ejsonString.optional()
+  })
+  .strict()
+
+export const CancelQuerySchema = z.object({ requestId: requestIdSchema }).strict()
 
 const idString = z
   .string()
   .min(1)
   .max(64 * 1024)
 const hashString = z.string().regex(/^[0-9a-f]{64}$/, 'expected sha-256 hex digest')
+// The server enforces the 16 MiB BSON limit; the JSON text of such a document is larger.
 const documentString = z
   .string()
   .min(1)
-  .max(1024 * 1024)
+  .max(64 * 1024 * 1024)
 
 export const ReplaceOneRequestSchema = z
   .object({
@@ -262,7 +338,7 @@ export const InsertManyRequestSchema = z
     connectionId: z.string().uuid(),
     db: dbName,
     coll: collName,
-    documents: z.array(documentString).min(1).max(10_000)
+    documents: z.array(documentString).min(1).max(MAX_INSERT_DOCUMENTS)
   })
   .strict()
 
@@ -285,11 +361,61 @@ export const DeleteManyRequestSchema = z
   })
   .strict()
 
+const writeOptions = { options: ejsonString.optional() }
+
+const WriteOpSchema = z.discriminatedUnion('method', [
+  z.object({ method: z.literal('insertOne'), document: documentString, ...writeOptions }).strict(),
+  z
+    .object({
+      method: z.literal('insertMany'),
+      documents: z.array(documentString).min(1).max(MAX_INSERT_DOCUMENTS),
+      ...writeOptions
+    })
+    .strict(),
+  z
+    .object({
+      method: z.enum(['updateOne', 'updateMany', 'findOneAndUpdate']),
+      filter: ejsonString,
+      update: ejsonString,
+      ...writeOptions
+    })
+    .strict(),
+  z
+    .object({
+      method: z.enum(['replaceOne', 'findOneAndReplace']),
+      filter: ejsonString,
+      replacement: documentString,
+      ...writeOptions
+    })
+    .strict(),
+  z
+    .object({
+      method: z.enum(['deleteOne', 'deleteMany', 'findOneAndDelete']),
+      filter: ejsonString,
+      ...writeOptions
+    })
+    .strict(),
+  z
+    .object({ method: z.literal('bulkWrite'), operations: documentString, ...writeOptions })
+    .strict(),
+  z.object({ method: z.literal('aggregate'), pipeline: ejsonString }).strict()
+])
+
+export const WriteRequestSchema = z
+  .object({
+    connectionId: z.string().uuid(),
+    db: dbName,
+    coll: collName,
+    op: WriteOpSchema
+  })
+  .strict()
+
+// The server validates names; driver-generated ones contain '$' (wildcard `$**_1`) and exceed 127 chars since 4.2.
 const indexName = z
   .string()
   .min(1)
-  .max(127)
-  .refine((v) => !v.includes('$') && !v.includes('\0'), 'invalid index name')
+  .max(1024)
+  .refine((v) => !v.includes('\0'), 'invalid index name')
 
 const ejsonObject = z
   .string()
@@ -335,5 +461,16 @@ export const DropIndexSchema = z
     db: dbName,
     coll: collName,
     name: indexName
+  })
+  .strict()
+
+export const CloudflaredVersionSchema = z
+  .object({
+    binaryPath: z
+      .string()
+      .trim()
+      .max(4096)
+      .refine(isCloudflaredExecutable, INVALID_CLOUDFLARED_PATH_MESSAGE)
+      .optional()
   })
   .strict()

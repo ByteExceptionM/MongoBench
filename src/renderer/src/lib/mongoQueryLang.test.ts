@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { parseMongoDocuments, parseMongoQuery } from './mongoQueryLang'
+import { EJSON } from 'bson'
+import { ParseError, parseMongoDocuments, parseMongoQuery, tokenize } from './mongoQueryLang'
 
 describe('parseMongoQuery', () => {
   it('returns empty ejson for blank input', () => {
@@ -142,6 +143,145 @@ describe('parseMongoQuery', () => {
         payload: { $binary: { base64: 'AQID', subType: '00' } }
       })
   })
+
+  it('keeps integral number literals with a dot or exponent as doubles', () => {
+    const r = parseMongoQuery('{ a: 5.0, b: -0.0, c: 1e3, d: 1E+21, e: 7 }')
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      expect(JSON.parse(r.ejson)).toEqual({
+        a: { $numberDouble: '5.0' },
+        b: { $numberDouble: '-0.0' },
+        c: { $numberDouble: '1e3' },
+        d: { $numberDouble: '1E+21' },
+        e: 7
+      })
+    }
+  })
+
+  it('leaves fractional literals as plain JSON numbers', () => {
+    const r = parseMongoQuery('{a: 1.5}')
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.ejson).toBe('{"a":1.5}')
+  })
+
+  it('stores integral doubles as BSON Double on the main side', () => {
+    const r = parseMongoQuery('{ a: 100.0 }')
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    const doc = EJSON.parse(r.ejson, { relaxed: false }) as { a: { _bsontype: string } }
+    expect(doc.a._bsontype).toBe('Double')
+  })
+
+  it('passes integral doubles to helpers as plain numbers', () => {
+    const r = parseMongoQuery('{ a: NumberLong(5.0), b: ISODate(1.7e12), c: NumberInt(2.0) }')
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      expect(JSON.parse(r.ejson)).toEqual({
+        a: { $numberLong: '5' },
+        b: { $date: { $numberLong: '1700000000000' } },
+        c: { $numberInt: '2' }
+      })
+    }
+  })
+
+  it('keeps an integral double as the id of a DBRef', () => {
+    const r = parseMongoQuery('{ r: DBRef("users", 5.0) }')
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      expect(JSON.parse(r.ejson)).toEqual({ r: { $ref: 'users', $id: { $numberDouble: '5.0' } } })
+    }
+  })
+
+  it('accepts Double / NumberDouble with numbers and numeric strings', () => {
+    const r = parseMongoQuery(
+      '[Double(5), NumberDouble(2.5), Double(-0.0), NumberDouble("NaN"), Double("Infinity"), Double("-Infinity"), Double("-0.0"), Double("1e+21")]'
+    )
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      expect(JSON.parse(r.ejson)).toEqual([
+        { $numberDouble: '5' },
+        { $numberDouble: '2.5' },
+        { $numberDouble: '-0.0' },
+        { $numberDouble: 'NaN' },
+        { $numberDouble: 'Infinity' },
+        { $numberDouble: '-Infinity' },
+        { $numberDouble: '-0.0' },
+        { $numberDouble: '1e+21' }
+      ])
+    }
+  })
+
+  it('rejects Double with a non-numeric argument', () => {
+    for (const input of [
+      'Double("abc")',
+      'Double("")',
+      'Double("0x10")',
+      'Double()',
+      'Double({})'
+    ]) {
+      const r = parseMongoQuery(input)
+      expect(r.ok, input).toBe(false)
+      if (!r.ok) expect(r.error).toMatch(/Double\(\) argument must be a number or numeric string/)
+    }
+  })
+
+  it('mints a fresh ObjectId for ObjectId() without arguments', () => {
+    const a = parseMongoQuery('ObjectId()')
+    const b = parseMongoQuery('ObjectId()')
+    expect(a.ok && b.ok).toBe(true)
+    if (!a.ok || !b.ok) return
+    const idA = (a.value as { $oid: string }).$oid
+    const idB = (b.value as { $oid: string }).$oid
+    expect(idA).toMatch(/^[0-9a-f]{24}$/)
+    expect(idB).toMatch(/^[0-9a-f]{24}$/)
+    expect(idA).not.toBe(idB)
+    expect(idA).not.toBe('000000000000000000000000')
+    const seconds = parseInt(idA.slice(0, 8), 16)
+    expect(Math.abs(seconds - Date.now() / 1000)).toBeLessThanOrEqual(5)
+  })
+
+  it('rejects ISODate with an unparseable string', () => {
+    for (const input of [
+      'ISODate("1-01-01T00:00:00+00:53:28")',
+      'ISODate("1850-06-01T00:53:28.000+00:53:28")',
+      'new Date("not a date")'
+    ]) {
+      const r = parseMongoQuery(input)
+      expect(r.ok, input).toBe(false)
+      if (!r.ok) expect(r.error).toMatch(/^Invalid date "/)
+    }
+  })
+
+  it('keeps "__proto__" keys as own properties', () => {
+    const r = parseMongoQuery('{ a: 1, __proto__: { x: NumberInt(1) }, b: { "__proto__": "s" } }')
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.ejson).toBe('{"a":1,"__proto__":{"x":{"$numberInt":"1"}},"b":{"__proto__":"s"}}')
+    expect(Object.getPrototypeOf(r.value)).toBe(Object.prototype)
+  })
+})
+
+describe('tokenize', () => {
+  it('emits "." and ";" as punctuation in shell mode', () => {
+    const tokens = tokenize('db.users.find();', { shell: true })
+    expect(
+      tokens.map((t) => (t.type === 'punct' || t.type === 'ident' ? t.value : t.type))
+    ).toEqual(['db', '.', 'users', '.', 'find', '(', ')', ';'])
+  })
+
+  it('rejects a lone "." without the shell option', () => {
+    expect(() => tokenize('a.b')).toThrow(ParseError)
+  })
+
+  it('still reads ".5" as a number in shell mode', () => {
+    const tokens = tokenize('.5', { shell: true })
+    expect(tokens).toEqual([{ type: 'number', value: '.5', offset: 0 }])
+  })
+
+  it('reads a regex containing ")" and a quote after "(" in shell mode', () => {
+    const tokens = tokenize("find(/a)'/)", { shell: true })
+    expect(tokens[2]).toEqual({ type: 'regex', pattern: "a)'", flags: '', offset: 5 })
+  })
 })
 
 describe('parseMongoDocuments', () => {
@@ -223,5 +363,11 @@ describe('parseMongoDocuments', () => {
     const r = parseMongoDocuments('{ a: 1 }\n42')
     expect(r.ok).toBe(false)
     if (!r.ok) expect(r.error).toMatch(/must be an object/)
+  })
+
+  it('keeps "__proto__" keys of each document', () => {
+    const r = parseMongoDocuments('{ __proto__: { x: 1 } }\n{ "__proto__": "s" }')
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.documents).toEqual(['{"__proto__":{"x":1}}', '{"__proto__":"s"}'])
   })
 })

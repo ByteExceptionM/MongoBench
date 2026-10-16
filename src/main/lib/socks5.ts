@@ -202,7 +202,13 @@ function handleClient(socket: Socket, options: Socks5Options): void {
         remote = await options.connect(host, port)
       } catch (cause) {
         socket.end(replyFrame(REPLY_CONNECTION_REFUSED))
-        throw new Error(`failed to forward to ${host}:${port}`, { cause })
+        const reason = cause instanceof Error ? cause.message : String(cause)
+        throw new Error(`failed to forward to ${host}:${port}: ${reason}`, { cause })
+      }
+      // The client left while the leg was opening, so the 'close' hook below would come too late.
+      if (socket.destroyed) {
+        remote.destroy()
+        return
       }
       // The driver drives its own idle timeouts from here on.
       socket.setTimeout(0)

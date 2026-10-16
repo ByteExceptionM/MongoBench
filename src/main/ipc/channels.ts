@@ -22,15 +22,18 @@ export const Channels = {
   CollectionsCreate: 'collections:create',
   CollectionsDrop: 'collections:drop',
   CollectionsRename: 'collections:rename',
+  CollectionsSchema: 'collections:schema',
 
   IndexesList: 'indexes:list',
   IndexesCreate: 'indexes:create',
   IndexesDrop: 'indexes:drop',
+  IndexesStats: 'indexes:stats',
 
   UsersList: 'users:list',
   UsersCreate: 'users:create',
   UsersUpdate: 'users:update',
   UsersDrop: 'users:drop',
+  RolesList: 'roles:list',
 
   QueryFind: 'query:find',
   QueryAggregate: 'query:aggregate',
@@ -40,12 +43,18 @@ export const Channels = {
   QueryInsertMany: 'query:insertMany',
   QueryDeleteOne: 'query:deleteOne',
   QueryDeleteMany: 'query:deleteMany',
+  QueryDistinct: 'query:distinct',
+  QueryCancel: 'query:cancel',
+  QueryWrite: 'query:write',
 
   UpdaterCheck: 'updater:check',
   UpdaterDownload: 'updater:download',
   UpdaterInstall: 'updater:install',
 
-  DialogPickPrivateKey: 'dialog:pickPrivateKey'
+  CloudflaredVersion: 'cloudflared:version',
+
+  DialogPickPrivateKey: 'dialog:pickPrivateKey',
+  DialogPickCloudflared: 'dialog:pickCloudflared'
 } as const
 
 export type ChannelName = (typeof Channels)[keyof typeof Channels]
@@ -53,5 +62,6 @@ export type ChannelName = (typeof Channels)[keyof typeof Channels]
 /** main → renderer pushes. Subscribed to in the preload, never `handle`d. */
 export const EventChannels = {
   UpdaterProgress: 'updater:progress',
-  ConnectionDropped: 'connections:dropped'
+  ConnectionDropped: 'connections:dropped',
+  CloudflaredLogin: 'cloudflared:login'
 } as const

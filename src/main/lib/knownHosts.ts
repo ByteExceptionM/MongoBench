@@ -4,13 +4,16 @@
  * client is trusted here too. Pure — the caller supplies the contents.
  *
  * Supported: plain patterns (with `*` / `?` wildcards and `!` negation), the
- * `[host]:port` form, and `|1|salt|hash` hashed entries. `@cert-authority` and
- * `@revoked` lines are skipped; we do not implement CA validation, and
- * skipping is the safe direction since such a line then authorises nothing.
+ * `[host]:port` form, `|1|salt|hash` hashed entries, and `@revoked` lines,
+ * whose key is refused for every host they match. `@cert-authority` lines are
+ * skipped; we do not implement CA validation, and skipping is the safe
+ * direction since such a line then authorises nothing.
  */
 
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto'
 import { DEFAULT_SSH_PORT } from '@shared/types'
+
+const REVOKED_MARKER = '@revoked'
 
 export type HostMatcher =
   | { kind: 'plain'; pattern: string; negated: boolean }
@@ -21,16 +24,21 @@ export type KnownHostEntry = {
   /** e.g. `ssh-ed25519`. Diagnostics only; matching goes by key bytes. */
   keyType: string
   key: Buffer
+  /** From an `@revoked` line: the key is refused, never authorised. */
+  revoked: boolean
 }
 
 export function parseKnownHosts(content: string): KnownHostEntry[] {
   const entries: KnownHostEntry[] = []
   for (const rawLine of content.split(/\r?\n/)) {
     const line = rawLine.trim()
-    if (line.length === 0 || line.startsWith('#') || line.startsWith('@')) continue
+    if (line.length === 0 || line.startsWith('#')) continue
 
-    const [hostField, keyType, keyBase64] = line.split(/\s+/)
+    const fields = line.split(/\s+/)
+    const revoked = fields[0] === REVOKED_MARKER
+    const [hostField, keyType, keyBase64] = revoked ? fields.slice(1) : fields
     if (hostField === undefined || keyType === undefined || keyBase64 === undefined) continue
+    if (hostField.startsWith('@')) continue
 
     const key = Buffer.from(keyBase64, 'base64')
     if (key.length === 0) continue
@@ -38,7 +46,7 @@ export function parseKnownHosts(content: string): KnownHostEntry[] {
     const hosts = hostField.split(',').flatMap(parseMatcher)
     if (hosts.length === 0) continue
 
-    entries.push({ hosts, keyType, key })
+    entries.push({ hosts, keyType, key, revoked })
   }
   return entries
 }
@@ -75,9 +83,22 @@ export function findHostKeys(entries: KnownHostEntry[], host: string, port: numb
   const names = candidateNames(host, port)
   const keys: Buffer[] = []
   for (const entry of entries) {
-    if (entryMatches(entry, names)) keys.push(entry.key)
+    if (!entry.revoked && entryMatches(entry, names)) keys.push(entry.key)
   }
   return keys
+}
+
+/** Whether an `@revoked` line that matches this host lists `key`. */
+export function isRevoked(
+  entries: KnownHostEntry[],
+  host: string,
+  port: number,
+  key: Buffer
+): boolean {
+  const names = candidateNames(host, port)
+  return entries.some(
+    (entry) => entry.revoked && keyMatches(key, entry.key) && entryMatches(entry, names)
+  )
 }
 
 function entryMatches(entry: KnownHostEntry, names: string[]): boolean {
@@ -118,4 +139,30 @@ export function keyMatches(candidate: Buffer, known: Buffer): boolean {
 /** OpenSSH's `SHA256:…` fingerprint of a raw public key blob. */
 export function fingerprint(key: Buffer): string {
   return `SHA256:${createHash('sha256').update(key).digest('base64').replace(/=+$/, '')}`
+}
+
+/** The type name a public key blob starts with, e.g. `ssh-rsa`; null for a malformed blob. */
+export function keyTypeOf(blob: Buffer): string | null {
+  if (blob.length < 4) return null
+  const end = 4 + blob.readUInt32BE(0)
+  return end <= blob.length ? blob.toString('ascii', 4, end) : null
+}
+
+/**
+ * `defaults` with the algorithms of already trusted key types moved to the front, as OpenSSH does.
+ * @param knownTypes key types (as `keyTypeOf` reads them) the host is trusted with.
+ * @param defaults host key algorithms in preference order.
+ * @returns the same algorithms; both groups keep their order from `defaults`.
+ */
+export function orderHostKeyAlgorithms<T extends string>(
+  knownTypes: readonly string[],
+  defaults: readonly T[]
+): T[] {
+  const known = (algorithm: T): boolean => knownTypes.includes(algorithmKeyType(algorithm))
+  return [...defaults.filter(known), ...defaults.filter((algorithm) => !known(algorithm))]
+}
+
+// RSA keys also sign under the rsa-sha2-* names (RFC 8332), but their blob always says ssh-rsa.
+function algorithmKeyType(algorithm: string): string {
+  return algorithm.startsWith('rsa-sha2-') ? 'ssh-rsa' : algorithm
 }

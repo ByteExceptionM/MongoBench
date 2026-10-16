@@ -1,22 +1,110 @@
-import { useMemo } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ServerCrash } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import {
+  hashKey,
+  isCancelledError,
+  useMutation,
+  useMutationState,
+  useQuery,
+  useQueryClient,
+  type MutationState,
+  type QueryKey,
+  type UseQueryResult
+} from '@tanstack/react-query'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle
+} from '@/components/ui/alert-dialog'
+import { compilePipelineSource } from '@/lib/aggregationPipeline'
 import { api, ApiError } from '@/lib/api'
-import { queryKeys } from '@/lib/queryClient'
-import { parseMongoQuery } from '@/lib/mongoQueryLang'
-import { parseShellCommand } from '@/lib/shellParser'
+import { useCompletionEnv } from '@/lib/completion/useCompletionEnv'
+import { cancelRequests } from '@/lib/queryCancellation'
+import {
+  explicitRunOptions,
+  mutationKeys,
+  queryKeys,
+  runQueryOptions,
+  shellWriteOptions,
+  simpleRunOptions,
+  type RunnableQuery,
+  type ShellWriteVariables
+} from '@/lib/queryClient'
+import {
+  compileFind,
+  runAggregation,
+  runFind,
+  runShellCommand,
+  type QueryResult,
+  type ShellWriteCommand,
+  type ShellWriteResult
+} from '@/lib/queryRun'
+import { parseShellCommand, writeConfirmation } from '@/lib/shellParser'
 import {
   useTabsStore,
-  type CollectionTab as CollectionTabType,
-  type QueryPatch
+  type AppliedSimple,
+  type AppliedSource,
+  type CollectionTab as CollectionTabType
 } from '@/store/tabs'
+import type { CollectionRef, UuidEncoding } from '@shared/types'
 import { QueryToolbar } from './QueryToolbar'
 import { DocumentTable } from './DocumentTable'
-import { StatusBar } from './StatusBar'
-import type { FindResponse, UuidEncoding } from '@shared/types'
+import {
+  CancelledState,
+  CountResult,
+  ErrorState,
+  IdleState,
+  LoadingState,
+  WriteResult
+} from './ResultStates'
+import { StatusBar, type StatusSummary } from './StatusBar'
+
+type DocumentsResult = Extract<QueryResult, { kind: 'documents' }>
+
+type ShellWriteState = MutationState<ShellWriteResult, Error, ShellWriteVariables>
+
+/** What the view reads of a shell write: the run it belongs to and its outcome. */
+type ShownWrite = Pick<ShellWriteState, 'status' | 'data' | 'error'> &
+  Partial<Pick<ShellWriteVariables, 'tabId' | 'epoch'>>
+
+/** A write waiting for the user to confirm it. */
+type PendingWrite = { tabId: string; reason: string }
+
+/** The visible mode's applied query: never run, not compilable, ready with its result key, or a write. */
+type ResultRun =
+  | { kind: 'idle'; mode: 'aggregation' | 'shell' }
+  | { kind: 'invalid'; error: string }
+  | ({ kind: 'ready' } & RunnableQuery<QueryResult>)
+  // Run executes it once as a mutation; it has no query, so no refetch or invalidation repeats it.
+  | { kind: 'write'; epoch: number }
+
+const runnable = (run: ResultRun | null): RunnableQuery<QueryResult> | null =>
+  run?.kind === 'ready' ? run : null
+
+const isCancelled = (error: unknown): boolean =>
+  isCancelledError(error) || (error instanceof ApiError && error.code === 'cancelled')
+
+const EMPTY_MESSAGES: Record<DocumentsResult['origin'], string> = {
+  find: 'No documents match the current filter.',
+  aggregate: 'The pipeline returned no documents.',
+  distinct: 'No values found.'
+}
+
+const TRUNCATION_HINTS: Record<DocumentsResult['origin'], string> = {
+  find: 'Use .skip() / .limit() to page through the rest.',
+  aggregate: 'Add $skip / $limit stages to page through the rest.',
+  distinct: 'Narrow the filter to see the remaining values.'
+}
 
 export function CollectionTab({ tab }: { tab: CollectionTabType }) {
-  const setQuery = useTabsStore((s) => s.setQuery)
+  // Only the mode: the rest of the draft changes on every keystroke and never affects results.
+  const mode = useTabsStore((s) => s.drafts[tab.id]?.mode ?? 'simple')
+  const setSkip = useTabsStore((s) => s.setSkip)
+  const commitRun = useTabsStore((s) => s.run)
   const queryClient = useQueryClient()
 
   const connectionsQuery = useQuery({
@@ -27,277 +115,377 @@ export function CollectionTab({ tab }: { tab: CollectionTabType }) {
   const uuidEncoding: UuidEncoding = connectionConfig?.uuidEncoding ?? 'default'
   const timezone = connectionConfig?.timezone ?? 'UTC'
 
-  // Compile all three modes' inputs up-front; the active query just picks
-  // its slice. parseMongoQuery rejects anything that isn't valid mongo
-  // shell syntax (with our $-operator extensions).
-  const compiled = useMemo(() => {
-    if (tab.mode === 'simple') {
-      const f = parseMongoQuery(tab.filter)
-      const p = parseMongoQuery(tab.projection)
-      const s = parseMongoQuery(tab.sort)
-      const ok = f.ok && p.ok && s.ok
-      return {
-        mode: 'simple' as const,
-        ok,
-        filter: f.ok ? f.ejson : null,
-        projection: p.ok ? p.ejson : null,
-        sort: s.ok ? s.ejson : null,
-        error:
-          (!f.ok && `Filter: ${f.error}`) ||
-          (!p.ok && `Projection: ${p.error}`) ||
-          (!s.ok && `Sort: ${s.error}`) ||
-          null
-      }
-    }
-    if (tab.mode === 'aggregation') {
-      const r = parseMongoQuery(tab.pipeline)
-      if (!r.ok) {
-        return { mode: 'aggregation' as const, ok: false, pipeline: null, error: r.error }
-      }
-      if (!Array.isArray(r.value)) {
-        return {
-          mode: 'aggregation' as const,
-          ok: false,
-          pipeline: null,
-          error: 'Pipeline must be an array'
-        }
-      }
-      return { mode: 'aggregation' as const, ok: true, pipeline: r.ejson, error: null }
-    }
-    // shell
-    const r = parseShellCommand(tab.shell)
-    if (!r.ok) {
-      return { mode: 'shell' as const, ok: false, parsed: null, error: r.error }
-    }
-    if (r.coll !== tab.coll) {
-      return {
-        mode: 'shell' as const,
-        ok: false,
-        parsed: null,
-        error: `Command targets "${r.coll}" but this tab is "${tab.coll}"`
-      }
-    }
-    return { mode: 'shell' as const, ok: true, parsed: r, error: null }
-  }, [tab.mode, tab.filter, tab.projection, tab.sort, tab.pipeline, tab.shell, tab.coll])
+  const { id, connectionId, db, coll, applied } = tab
+  const simple = applied.simple
+  const appliedSource =
+    mode === 'aggregation' ? applied.aggregation : mode === 'shell' ? applied.shell : null
+  const compiledFind = useMemo(() => compileFind(simple), [simple])
+  const findRun = useMemo(
+    () => simpleRun({ connectionId, db, coll }, simple, compiledFind),
+    [connectionId, db, coll, simple, compiledFind]
+  )
+  const sourceRun = useMemo(
+    () =>
+      mode === 'simple' ? null : explicitRun(id, { connectionId, db, coll }, mode, appliedSource),
+    [id, connectionId, db, coll, mode, appliedSource]
+  )
 
-  const findQuery = useQuery({
-    queryKey:
-      compiled.mode === 'simple'
-        ? queryKeys.find(
-            tab.connectionId,
-            tab.db,
-            tab.coll,
-            tab.filter,
-            tab.projection,
-            tab.sort,
-            tab.skip,
-            tab.limit,
-            tab.runEpoch
-          )
-        : compiled.mode === 'aggregation'
-          ? queryKeys.aggregate(tab.connectionId, tab.db, tab.coll, tab.pipeline, tab.runEpoch)
-          : queryKeys.shell(tab.connectionId, tab.db, tab.coll, tab.shell, tab.runEpoch),
-    queryFn: () => runForMode(tab, compiled),
-    enabled: compiled.ok,
-    // Don't auto-refetch when the user just switches between tabs; the
-    // query only re-runs when its key changes (filter / mode / runEpoch).
-    refetchOnMount: false,
-    staleTime: Infinity
+  // Observed in every mode so a mode switch shows the kept result without re-running it.
+  const findQuery = useQuery(
+    runQueryOptions(id, runnable(findRun), simpleRunOptions, mode === 'simple')
+  )
+  const sourceQuery = useQuery(runQueryOptions(id, runnable(sourceRun), explicitRunOptions))
+  const run = sourceRun ?? findRun
+  const resultQuery = sourceRun ? sourceQuery : findQuery
+
+  const writeMutation = useMutation(shellWriteOptions(queryClient))
+  // Filtered while rendering: useMutationState applies changed filters only on its next cache event.
+  const writeStates = useMutationState({
+    filters: { mutationKey: mutationKeys.shellWrite },
+    select: (mutation): ShownWrite => {
+      const { variables, status, data, error } = mutation.state as ShellWriteState
+      return { tabId: variables?.tabId, epoch: variables?.epoch, status, data, error }
+    }
   })
+  const writeState =
+    run.kind === 'write'
+      ? writeStates.find((write) => write.tabId === id && write.epoch === run.epoch)
+      : undefined
+  const writing = writeState?.status === 'pending'
 
-  // Count is only meaningful for the simple mode — aggregation/shell show
-  // the result size in the StatusBar instead.
-  const countQuery = useQuery({
-    queryKey: queryKeys.count(tab.connectionId, tab.db, tab.coll, tab.filter),
-    queryFn: () =>
-      api.query.count({
-        connectionId: tab.connectionId,
-        db: tab.db,
-        coll: tab.coll,
-        ...(compiled.mode === 'simple' && compiled.filter ? { filter: compiled.filter } : {})
-      }),
-    enabled: compiled.mode === 'simple' && compiled.ok
-  })
+  const [confirming, setConfirming] = useState<PendingWrite | null>(null)
+  // One view serves every tab; a confirmation belongs to the tab that asked for it.
+  if (confirming !== null && confirming.tabId !== id) setConfirming(null)
 
-  const apply = (patch: QueryPatch) => setQuery(tab.id, patch)
-
-  const cancel = () => {
-    // Soft cancel via react-query: the IPC promise still settles in main
-    // but its result is discarded, so the UI returns to its previous state
-    // immediately. No queryFn signal plumbing needed.
-    const key =
-      tab.mode === 'simple'
-        ? queryKeys.find(
-            tab.connectionId,
-            tab.db,
-            tab.coll,
-            tab.filter,
-            tab.projection,
-            tab.sort,
-            tab.skip,
-            tab.limit,
-            tab.runEpoch
-          )
-        : tab.mode === 'aggregation'
-          ? queryKeys.aggregate(tab.connectionId, tab.db, tab.coll, tab.pipeline, tab.runEpoch)
-          : queryKeys.shell(tab.connectionId, tab.db, tab.coll, tab.shell, tab.runEpoch)
-    void queryClient.cancelQueries({ queryKey: key })
+  const runWrite = () => {
+    // Committing first gives the write its run's epoch, which releases the tab's previous write.
+    const committed = commitRun(id)
+    if (committed === null || !('source' in committed)) return
+    // Parsed from the committed source, so the write is exactly the run the tab records and shows.
+    const parsed = parseShellCommand(committed.source)
+    if (!parsed.ok) return
+    const { command } = parsed
+    if (command.op.kind !== 'write') return
+    writeMutation.mutate({
+      tabId: id,
+      epoch: committed.epoch,
+      target: { connectionId, db },
+      command: { coll: command.coll, op: command.op }
+    })
   }
 
-  const documents = findQuery.data?.documents ?? []
-  const tookMs = findQuery.data?.tookMs
+  const requestWrite = (command: ShellWriteCommand) => {
+    const reason = writeConfirmation(command, db)
+    if (reason === null) runWrite()
+    else setConfirming({ tabId: id, reason })
+  }
+
+  const countKey = queryKeys.count(connectionId, db, coll, simple.filter, simple.epoch)
+  const countQuery = useQuery(
+    runQueryOptions(
+      id,
+      compiledFind.ok
+        ? {
+            key: countKey,
+            execute: (requestId) =>
+              api.query.count({
+                connectionId,
+                db,
+                coll,
+                ...(compiledFind.find.filter ? { filter: compiledFind.find.filter } : {}),
+                requestId
+              })
+          }
+        : null,
+      simpleRunOptions,
+      // Only Simple mode pages, so only it needs the total.
+      mode === 'simple'
+    )
+  )
+
+  const cancel = () => {
+    const keys: QueryKey[] = run.kind === 'ready' ? [run.key] : []
+    if (mode === 'simple') keys.push(countKey)
+    for (const key of keys) {
+      const hash = hashKey(key)
+      cancelRequests((k) => hashKey(k) === hash)
+      // Kept as a failure instead of reverting, so the cancelled run is never re-executed implicitly.
+      void queryClient.cancelQueries({ queryKey: key, exact: true }, { revert: false })
+    }
+  }
+
+  const result = resultQuery.data
+  const completionEnv = useCompletionEnv({
+    connectionId,
+    db,
+    coll,
+    uuidEncoding,
+    timezone,
+    // Projected, derived or other collections' rows would teach the schema fields `coll` does not store.
+    documents:
+      result?.kind === 'documents' && result.rowAccess === 'full' && result.coll === coll
+        ? result.documents
+        : undefined
+  })
+  const loading = resultQuery.isFetching
+  // A slow count shows as running but never blocks Run.
+  const countLoading = mode === 'simple' && countQuery.isFetching
+  const summary: StatusSummary =
+    mode === 'simple'
+      ? {
+          kind: 'paged',
+          count: countQuery.data?.count,
+          countError:
+            countQuery.error && !isCancelled(countQuery.error) ? countQuery.error.message : null,
+          estimated: countQuery.data?.estimated ?? false,
+          pageSize: simple.limit,
+          skip: simple.skip,
+          pageDocs: result?.kind === 'documents' ? result.documents.length : 0,
+          busy: findQuery.isFetching,
+          onJump: (skip) => setSkip(id, skip)
+        }
+      : result?.kind === 'documents'
+        ? rowsSummary(result, coll)
+        : { kind: 'none' }
 
   return (
     <section className="flex h-full flex-col">
       <QueryToolbar
         tab={tab}
-        onApply={apply}
         onCancel={cancel}
-        loading={findQuery.isFetching}
-        documents={documents}
+        onRunWrite={requestWrite}
+        loading={loading}
+        writing={writing}
+        completionEnv={completionEnv}
         uuidEncoding={uuidEncoding}
         timezone={timezone}
-        compiledFilter={compiled.mode === 'simple' ? compiled.filter : null}
-        compiledProjection={compiled.mode === 'simple' ? compiled.projection : null}
-        compiledSort={compiled.mode === 'simple' ? compiled.sort : null}
+        exportFind={compiledFind.ok ? compiledFind.find : null}
+        exportDocCount={
+          mode === 'simple' && result?.kind === 'documents' ? result.documents.length : 0
+        }
       />
 
       <StatusBar
-        loading={findQuery.isFetching || countQuery.isFetching}
-        count={
-          compiled.mode === 'simple' ? countQuery.data?.count : findQuery.data?.documents.length
-        }
-        estimated={compiled.mode === 'simple' ? (countQuery.data?.estimated ?? false) : false}
-        pageSize={compiled.mode === 'simple' ? tab.limit : 0}
-        skip={tab.skip}
-        pageDocs={documents.length}
-        tookMs={tookMs}
-        onJump={(skip) => setQuery(tab.id, { skip })}
+        loading={loading || countLoading || writing}
+        tookMs={run.kind === 'write' ? writeState?.data?.tookMs : result?.tookMs}
+        summary={summary}
       />
 
       <div className="relative flex-1 overflow-hidden">
-        {compiled.error ? (
-          <ErrorState message={compiled.error} />
-        ) : findQuery.error instanceof ApiError ? (
-          <ErrorState message={findQuery.error.message} />
-        ) : (
-          <DocumentTable
-            documents={documents}
-            loading={findQuery.isFetching}
-            connectionId={tab.connectionId}
-            db={tab.db}
-            coll={tab.coll}
-            uuidEncoding={uuidEncoding}
-            timezone={timezone}
-          />
-        )}
+        <ResultView
+          run={run}
+          query={resultQuery}
+          write={writeState}
+          tab={tab}
+          uuidEncoding={uuidEncoding}
+          timezone={timezone}
+        />
       </div>
+
+      <AlertDialog
+        open={confirming !== null}
+        onOpenChange={(open) => {
+          if (!open) setConfirming(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Run this write?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {confirming?.reason} A write can&apos;t be cancelled once it runs.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              // The closing dialog still takes a second click or Enter; only the first one confirms.
+              onClick={() => {
+                if (confirming !== null) runWrite()
+              }}
+            >
+              Run write
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </section>
   )
 }
 
-type Compiled =
-  | {
-      mode: 'simple'
-      ok: boolean
-      filter: string | null
-      projection: string | null
-      sort: string | null
-      error: string | null
-    }
-  | { mode: 'aggregation'; ok: boolean; pipeline: string | null; error: string | null }
-  | {
-      mode: 'shell'
-      ok: boolean
-      parsed: (ReturnType<typeof parseShellCommand> & { ok: true }) | null
-      error: string | null
-    }
+function ResultView({
+  run,
+  query,
+  write,
+  tab,
+  uuidEncoding,
+  timezone
+}: {
+  run: ResultRun
+  query: Pick<UseQueryResult<QueryResult>, 'data' | 'error' | 'fetchStatus'>
+  write: ShownWrite | undefined
+  tab: CollectionTabType
+  uuidEncoding: UuidEncoding
+  timezone: string
+}) {
+  const { id, connectionId, db, coll } = tab
+  if (run.kind === 'idle') return <IdleState mode={run.mode} coll={coll} db={db} />
+  if (run.kind === 'invalid') return <ErrorState message={run.error} />
+  if (run.kind === 'write') {
+    return (
+      <ShellWriteView
+        state={write}
+        tabId={id}
+        connectionId={connectionId}
+        db={db}
+        coll={coll}
+        uuidEncoding={uuidEncoding}
+        timezone={timezone}
+      />
+    )
+  }
+  const { data: result, error } = query
+  if (isCancelled(error)) return <CancelledState />
+  if (error) return <ErrorState message={error.message} />
+  if (!result) return query.fetchStatus === 'idle' ? <CancelledState /> : <LoadingState />
+  if (result.kind === 'count') {
+    return (
+      <CountResult
+        count={result.count}
+        estimated={result.estimated}
+        method={result.method}
+        coll={result.coll}
+      />
+    )
+  }
+  return (
+    <DocumentTable
+      // Selection, lookup target and column widths belong to one tab's view of one collection.
+      key={`${id}:${result.coll}`}
+      documents={result.documents}
+      connectionId={connectionId}
+      db={db}
+      coll={result.coll}
+      rowAccess={result.rowAccess}
+      emptyMessage={EMPTY_MESSAGES[result.origin]}
+      uuidEncoding={uuidEncoding}
+      timezone={timezone}
+    />
+  )
+}
 
-async function runForMode(tab: CollectionTabType, compiled: Compiled): Promise<FindResponse> {
-  if (compiled.mode === 'simple') {
-    return api.query.find({
-      connectionId: tab.connectionId,
-      db: tab.db,
-      coll: tab.coll,
-      ...(compiled.filter ? { filter: compiled.filter } : {}),
-      ...(compiled.projection ? { projection: compiled.projection } : {}),
-      ...(compiled.sort ? { sort: compiled.sort } : {}),
-      skip: tab.skip,
-      ...(tab.limit > 0 ? { limit: tab.limit } : {})
-    })
-  }
-  if (compiled.mode === 'aggregation') {
-    if (!compiled.pipeline) throw new Error('unreachable: aggregation enabled without pipeline')
-    return api.query.aggregate({
-      connectionId: tab.connectionId,
-      db: tab.db,
-      coll: tab.coll,
-      pipeline: compiled.pipeline
-    })
-  }
-  // shell
-  if (!compiled.parsed || !compiled.parsed.ok)
-    throw new Error('unreachable: shell enabled without parsed command')
-  const op = compiled.parsed.op
-  if (op.kind === 'aggregate') {
-    return api.query.aggregate({
-      connectionId: tab.connectionId,
-      db: tab.db,
-      coll: tab.coll,
-      pipeline: op.pipeline
-    })
-  }
-  if (op.kind === 'find') {
-    return api.query.find({
-      connectionId: tab.connectionId,
-      db: tab.db,
-      coll: tab.coll,
-      filter: op.filter,
-      ...(op.projection ? { projection: op.projection } : {}),
-      ...(op.sort ? { sort: op.sort } : {}),
-      skip: op.skip ?? 0,
-      ...(op.limit !== null ? { limit: op.limit } : {})
-    })
-  }
-  if (op.kind === 'findOne') {
-    return api.query.find({
-      connectionId: tab.connectionId,
-      db: tab.db,
-      coll: tab.coll,
-      filter: op.filter,
-      skip: 0,
-      limit: 1
-    })
-  }
-  // countDocuments — return an empty docs response; the count shows in the
-  // StatusBar via a one-off api.query.count call below.
-  const countResp = await api.query.count({
-    connectionId: tab.connectionId,
-    db: tab.db,
-    coll: tab.coll,
-    filter: op.filter
-  })
+function ShellWriteView({
+  state,
+  tabId,
+  connectionId,
+  db,
+  coll,
+  uuidEncoding,
+  timezone
+}: {
+  state: ShownWrite | undefined
+  tabId: string
+  connectionId: string
+  db: string
+  coll: string
+  uuidEncoding: UuidEncoding
+  timezone: string
+}) {
+  const returned = state?.data?.returned
+  const documents = useMemo(() => (returned?.document ? [returned.document] : []), [returned])
+  if (!state) return <IdleState mode="shell" coll={coll} db={db} />
+  if (state.error) return <ErrorState title="Write failed" message={state.error.message} />
+  if (!state.data) return <LoadingState label="Writing…" />
+  const { writes } = state.data
+  return (
+    <WriteResult result={state.data} db={db} uuidEncoding={uuidEncoding} timezone={timezone}>
+      {returned && (
+        <DocumentTable
+          key={`${tabId}:${writes.coll}`}
+          documents={documents}
+          connectionId={connectionId}
+          db={writes.db}
+          coll={writes.coll}
+          rowAccess={returned.rowAccess}
+          emptyMessage="No document matched."
+          uuidEncoding={uuidEncoding}
+          timezone={timezone}
+        />
+      )}
+    </WriteResult>
+  )
+}
+
+function simpleRun(
+  ref: CollectionRef,
+  simple: AppliedSimple,
+  compiled: ReturnType<typeof compileFind>
+): ResultRun {
+  if (!compiled.ok) return { kind: 'invalid', error: compiled.error }
+  const { find } = compiled
   return {
-    documents: [
-      {
-        id: '"_count"',
-        data: { _count: countResp.count },
-        canonical: `{"_count":${countResp.count}}`,
-        hash: 'a'.repeat(64)
-      }
-    ],
-    tookMs: 0
+    kind: 'ready',
+    key: queryKeys.find(
+      ref.connectionId,
+      ref.db,
+      ref.coll,
+      simple.filter,
+      simple.projection,
+      simple.sort,
+      simple.skip,
+      simple.limit,
+      simple.epoch
+    ),
+    execute: (requestId) => runFind(ref, find, requestId)
   }
 }
 
-function ErrorState({ message }: { message: string }) {
-  return (
-    <div className="m-6 flex items-start gap-3 rounded-md border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
-      <ServerCrash className="mt-0.5 h-4 w-4" />
-      <div>
-        <div className="font-medium">Query failed</div>
-        <div className="text-xs opacity-80">{message}</div>
-      </div>
-    </div>
-  )
+function explicitRun(
+  tabId: string,
+  ref: CollectionRef,
+  mode: 'aggregation' | 'shell',
+  applied: AppliedSource | null
+): ResultRun {
+  if (applied === null || applied.source.trim() === '') return { kind: 'idle', mode }
+  if (mode === 'aggregation') {
+    const compiled = compilePipelineSource(applied.source)
+    if (!compiled.ok) return { kind: 'invalid', error: compiled.error }
+    return {
+      kind: 'ready',
+      key: queryKeys.aggregate(
+        tabId,
+        ref.connectionId,
+        ref.db,
+        ref.coll,
+        applied.source,
+        applied.epoch
+      ),
+      execute: (requestId) => runAggregation(ref, compiled, requestId)
+    }
+  }
+  const parsed = parseShellCommand(applied.source)
+  if (!parsed.ok) return { kind: 'invalid', error: parsed.error }
+  const { coll, op } = parsed.command
+  if (op.kind === 'write') return { kind: 'write', epoch: applied.epoch }
+  return {
+    kind: 'ready',
+    key: queryKeys.shell(tabId, ref.connectionId, ref.db, applied.source, applied.epoch),
+    execute: (requestId) => runShellCommand(ref, { coll, op }, requestId)
+  }
+}
+
+function rowsSummary(result: DocumentsResult, tabColl: string): StatusSummary {
+  return {
+    kind: 'rows',
+    rows: result.documents.length,
+    truncated: result.truncated,
+    truncationHint: TRUNCATION_HINTS[result.origin],
+    readOnlyReason:
+      result.rowAccess !== 'none'
+        ? null
+        : result.origin === 'distinct'
+          ? "Distinct values aren't documents."
+          : `Pipeline output isn't 1:1 documents of ${result.coll}, so rows can't be edited or deleted.`,
+    foreignColl: result.coll === tabColl ? null : result.coll
+  }
 }

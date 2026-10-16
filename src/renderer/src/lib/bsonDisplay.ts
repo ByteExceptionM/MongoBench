@@ -154,6 +154,7 @@ export function extractColumns(documents: DocumentEnvelope[]): string[] {
   for (const env of documents) {
     for (const key of Object.keys(env.data)) seen.add(key)
   }
+  if (!seen.has('_id')) return [...seen]
   return ['_id', ...[...seen].filter((k) => k !== '_id')]
 }
 
